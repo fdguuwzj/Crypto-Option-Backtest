@@ -45,7 +45,7 @@ class BackTrader:
             return False
 
 
-    def close_position(self, row):
+    def rebalance_box_spread_position(self, row):
         # 获取当前时间点的最大spread组合
         current_time = row['snapshot_time']
         current_long_box_max_pnl = row['long_box_max_pnl']
@@ -116,17 +116,85 @@ class BackTrader:
             self.trade_positions.append(self.current_position)
             self.num_trades += 1
 
+    def rebalance_dual_sell_position(self, row):
+        current_time = row['snapshot_time']
+        current_long_box_max_pnl = row['long_box_max_pnl']
+        current_short_box_max_pnl = row['short_box_max_pnl']
+        if current_long_box_max_pnl < 0 and current_short_box_max_pnl < 0:
+            self.current_position = {'current_time': current_time}
+            logger.info("两个pnl都小于0，不开仓")
+            self.trade_profits.append({'current_time': current_time, 'current_spread': 0})
+            self.trade_positions.append(self.current_position)
+            return
 
+        elif current_long_box_max_pnl > current_short_box_max_pnl:
+            current_max_call_price = row['long_box_sell_Ch']
+            current_max_call_name = row['long_box_H_call_option_name']
+            current_max_put_price = row['long_box_sell_Pl']
+            current_max_put_name = row['long_box_L_put_option_name']
+            current_min_call_price = row['long_box_buy_Cl']
+            current_min_call_name = row['long_box_L_call_option_name']
+            current_min_put_price = row['long_box_buy_Ph']
+            current_min_put_name = row['long_box_H_put_option_name']
+            current_spread = current_long_box_max_pnl
+            current_min_mature_time = row['long_box_mature']
+            current_max_mature_time = row['long_box_mature']
+            self.current_position = {
+            'max_call_price': current_max_call_price,
+            'max_call_name': current_max_call_name,
+            'max_put_price': current_max_put_price,
+            'max_put_name': current_max_put_name,
+            'min_call_price': current_min_call_price,
+            'min_call_name': current_min_call_name,
+            'min_put_price': current_min_put_price,
+            'min_put_name': current_min_put_name,
+            'current_time': current_time,
+            'mature_time': max(current_min_mature_time, current_max_mature_time)
+            }
+            self.current_capital += current_spread
+            self.trade_profits.append({'current_time': current_time, 'current_spread': current_spread})
+            logger.info(f"self.current_capital {self.current_capital}, current_spread {current_spread}")
+            self.trade_positions.append(self.current_position)
+            self.num_trades += 1
+        else:
+            current_max_call_price = row['short_box_buy_Ch']
+            current_max_call_name = row['short_box_H_call_option_name']
+            current_max_put_price = row['short_box_buy_Pl']
+            current_max_put_name = row['short_box_L_put_option_name']
+            current_min_call_price = row['short_box_sell_Cl']
+            current_min_call_name = row['short_box_L_call_option_name']
+            current_min_put_price = row['short_box_sell_Ph']
+            current_min_put_name = row['short_box_H_put_option_name']
+            current_spread = current_short_box_max_pnl
+            current_min_mature_time = row['short_box_mature']
+            current_max_mature_time = row['short_box_mature']
+            self.current_position = {
+            'max_call_price': current_max_call_price,
+            'max_call_name': current_max_call_name,
+            'max_put_price': current_max_put_price,
+            'max_put_name': current_max_put_name,
+            'min_call_price': current_min_call_price,
+            'min_call_name': current_min_call_name,
+            'min_put_price': current_min_put_price,
+            'min_put_name': current_min_put_name,
+            'current_time': current_time,
+            'mature_time': max(current_min_mature_time, current_max_mature_time)
+            }
+            self.current_capital += current_spread
+            self.trade_profits.append({'current_time': current_time, 'current_spread': current_spread})
+            logger.info(f"self.current_capital {self.current_capital}, current_spread {current_spread}")
+            self.trade_positions.append(self.current_position)
+            self.num_trades += 1
     # 创建一个函数来模拟交易
     def paper_trade(self, row):
         # 如果没有持仓，直接开仓
         if not self.current_position:
-            self.close_position(row)
+            self.rebalance_box_spread_position(row)
             # logger.info(f"开仓: {self.current_position}")
         else:
             if self.arraive_time(row['snapshot_time']):
                 # 平仓
-                self.close_position(row)
+                self.rebalance_box_spread_position(row)
                 # logger.info(f"平掉到期仓位后开仓: {self.current_position}")
 
     def trade(self):
