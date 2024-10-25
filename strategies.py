@@ -19,6 +19,14 @@ from loguru import logger
 from plotly.subplots import make_subplots
 import plotly.graph_objects as go
 data = pd.read_csv('data/min_max_options_couple.csv')
+from loguru import logger
+from plotly.subplots import make_subplots
+
+time_spread = pd.read_csv('data/min_max_options_couple.csv')
+time_spread['short_box_mature'] = pd.to_datetime(time_spread['short_box_mature'])
+time_spread['long_box_mature'] = pd.to_datetime(time_spread['long_box_mature'])
+time_spread['snapshot_time'] = pd.to_datetime(time_spread['snapshot_time'])
+
 
 class Option:
     def __init__(self, snapshot_time: str = '0',
@@ -36,6 +44,7 @@ class Option:
         self.type = type
         self.btc_price = btc_price
         self.side = side # 'buy' or 'sell'
+        self.number = 1
 
 
 class Position:
@@ -43,6 +52,7 @@ class Position:
         self.current_time = current_time
         self.options: list[Option] = options if options else None
         self.expiry_date = max([option.expiry_date for option in options]) if options else None
+        self.volume = sum([abs(option.number*option.mark_price*option.btc_price)  for option in options])  if options else 0
 
     
 
@@ -66,9 +76,11 @@ class BackTrader:
         self.data = data
         self.target_data =  data[['snapshot_time', 'btc_price']].drop_duplicates().set_index('snapshot_time')
         self.time_stamps = data[(data['snapshot_time'] >= date_interval[0]) & (data['snapshot_time'] <= date_interval[1])]['snapshot_time'].unique()
+        self.real_start_time = max(pd.to_datetime(date_interval[0]), self.data["snapshot_time"].min())
+        self.real_end_time = min(pd.to_datetime(date_interval[1]), self.data["snapshot_time"].max())
         # 输出data数据的起讫日期
         logger.info(f'data数据的起始日期: {self.data["snapshot_time"].min()}, 结束日期: {self.data["snapshot_time"].max()}')
-        logger.info(f'回测起始日期: {max(pd.to_datetime(date_interval[0]), self.data["snapshot_time"].min())}, 回测结束日期: {min(pd.to_datetime(date_interval[1]), self.data["snapshot_time"].max())}, 总共时长: {(pd.to_datetime(date_interval[1]) - pd.to_datetime(date_interval[0])).total_seconds() / 3600} h')
+        logger.info(f'回测起始日期: {self.real_start_time}, 回测结束日期: {self.real_end_time}, 总共时长: {(self.real_end_time - self.real_start_time).total_seconds() / 3600} h')
         # 交易设置
         self.exe_price_gear = exe_price_gear
         self.mature_gear = mature_gear
@@ -214,6 +226,7 @@ class BackTrader:
         self.trade_trails = pd.merge(trade_profits, trade_positions, on='current_time')
         self.trade_trails['return_per_time'] = self.trade_trails['pnl']/self.initial_capital
         self.trade_trails['curve'] = (self.trade_trails['pnl'].expanding().sum() + self.initial_capital)/self.initial_capital
+        self.trade_trails['current_capital'] = self.trade_trails['pnl'].expanding().sum() + self.initial_capital
 
 
         self.trade_trails['max2here'] = self.trade_trails['curve'].expanding().max()
@@ -225,6 +238,8 @@ class BackTrader:
         start_date = self.trade_trails[self.trade_trails['current_time'] <= end_date].sort_values(by='curve', ascending=False).iloc[0][
             'current_time']
         sharpe_ratio = self.trade_trails['return_per_time'].mean() / self.trade_trails['return_per_time'].std()
+        daily_turnover = (self.trade_trails['volume']/ self.trade_trails['current_capital']).sum() / (self.real_end_time - self.real_start_time).days
+
         # 计算其他统计数据
         print(f"sharpe_ratio: {sharpe_ratio*sqrt(365):.2f}")
         print(f'max_draw_down: {max_draw_down:.2f}')
@@ -238,6 +253,7 @@ class BackTrader:
         print(f"平均每笔交易收益: {avg_profit_per_trade:.2f}")
         print(f"最大单笔收益: {max_profit:.2f}")
         print(f"最小单笔收益: {min_profit:.2f}")
+        print(f"daily turnover: {daily_turnover:.2f}")
 
         self.trade_trails = pd.merge(self.trade_trails, self.target_data, left_on='current_time', right_on='snapshot_time', how='left')
 
@@ -286,6 +302,253 @@ class BackTrader:
         pio.renderers.default = 'browser'  # 或尝试其他渲染模式
         fig.show()
 
+
+class BoxSpreadBackTrader:
+    def __init__(self, current_position={}, trade_positions=[], trade_profits=[], initial_capital=30000,
+                 time_spread=time_spread):
+        # 创建一个字典来存储当前持仓
+        self.current_position = current_position
+        # 记录所有的持仓信息
+        self.trade_positions = trade_positions
+        # 创建一个列表来存储每次交易的收益
+        self.trade_profits = trade_profits
+        # 初始资金
+        self.initial_capital = initial_capital
+        self.current_capital = initial_capital
+        self.time_spread = time_spread
+        self.num_trades = 0
+
+    def arraive_time(self, current_time: pd.Timestamp):
+        # 如果当前时间大于持仓的到期时间，平仓
+        if 'mature_time' not in self.current_position.keys():
+            return True
+        elif current_time >= self.current_position['mature_time'] + pd.Timedelta(hours=8):
+            return True
+        else:
+            return False
+
+    def rebalance_box_spread_position(self, row):
+        # 获取当前时间点的最大spread组合
+        current_time = row['snapshot_time']
+        current_long_box_max_pnl = row['long_box_max_pnl']
+        current_short_box_max_pnl = row['short_box_max_pnl']
+        if current_long_box_max_pnl < 0 and current_short_box_max_pnl < 0:
+            self.current_position = {'current_time': current_time}
+            logger.info("两个pnl都小于0，不开仓")
+            self.trade_profits.append({'current_time': current_time, 'current_spread': 0})
+            self.trade_positions.append(self.current_position)
+            return
+
+        elif current_long_box_max_pnl > current_short_box_max_pnl:
+            current_max_call_price = row['long_box_sell_Ch']
+            current_max_call_name = row['long_box_H_call_option_name']
+            current_max_put_price = row['long_box_sell_Pl']
+            current_max_put_name = row['long_box_L_put_option_name']
+            current_min_call_price = row['long_box_buy_Cl']
+            current_min_call_name = row['long_box_L_call_option_name']
+            current_min_put_price = row['long_box_buy_Ph']
+            current_min_put_name = row['long_box_H_put_option_name']
+            current_spread = current_long_box_max_pnl
+            current_min_mature_time = row['long_box_mature']
+            current_max_mature_time = row['long_box_mature']
+            self.current_position = {
+                'max_call_price': current_max_call_price,
+                'max_call_name': current_max_call_name,
+                'max_put_price': current_max_put_price,
+                'max_put_name': current_max_put_name,
+                'min_call_price': current_min_call_price,
+                'min_call_name': current_min_call_name,
+                'min_put_price': current_min_put_price,
+                'min_put_name': current_min_put_name,
+                'current_time': current_time,
+                'mature_time': max(current_min_mature_time, current_max_mature_time)
+            }
+            self.current_capital += current_spread
+            self.trade_profits.append({'current_time': current_time, 'current_spread': current_spread})
+            logger.info(f"self.current_capital {self.current_capital}, current_spread {current_spread}")
+            self.trade_positions.append(self.current_position)
+            self.num_trades += 1
+        else:
+            current_max_call_price = row['short_box_buy_Ch']
+            current_max_call_name = row['short_box_H_call_option_name']
+            current_max_put_price = row['short_box_buy_Pl']
+            current_max_put_name = row['short_box_L_put_option_name']
+            current_min_call_price = row['short_box_sell_Cl']
+            current_min_call_name = row['short_box_L_call_option_name']
+            current_min_put_price = row['short_box_sell_Ph']
+            current_min_put_name = row['short_box_H_put_option_name']
+            current_spread = current_short_box_max_pnl
+            current_min_mature_time = row['short_box_mature']
+            current_max_mature_time = row['short_box_mature']
+            self.current_position = {
+                'max_call_price': current_max_call_price,
+                'max_call_name': current_max_call_name,
+                'max_put_price': current_max_put_price,
+                'max_put_name': current_max_put_name,
+                'min_call_price': current_min_call_price,
+                'min_call_name': current_min_call_name,
+                'min_put_price': current_min_put_price,
+                'min_put_name': current_min_put_name,
+                'current_time': current_time,
+                'mature_time': max(current_min_mature_time, current_max_mature_time)
+            }
+            self.current_capital += current_spread
+            self.trade_profits.append({'current_time': current_time, 'current_spread': current_spread})
+            logger.info(f"self.current_capital {self.current_capital}, current_spread {current_spread}")
+            self.trade_positions.append(self.current_position)
+            self.num_trades += 1
+
+    def rebalance_dual_sell_position(self, row):
+        current_time = row['snapshot_time']
+        current_long_box_max_pnl = row['long_box_max_pnl']
+        current_short_box_max_pnl = row['short_box_max_pnl']
+        if current_long_box_max_pnl < 0 and current_short_box_max_pnl < 0:
+            self.current_position = {'current_time': current_time}
+            logger.info("两个pnl都小于0，不开仓")
+            self.trade_profits.append({'current_time': current_time, 'current_spread': 0})
+            self.trade_positions.append(self.current_position)
+            return
+
+        elif current_long_box_max_pnl > current_short_box_max_pnl:
+            current_max_call_price = row['long_box_sell_Ch']
+            current_max_call_name = row['long_box_H_call_option_name']
+            current_max_put_price = row['long_box_sell_Pl']
+            current_max_put_name = row['long_box_L_put_option_name']
+            current_min_call_price = row['long_box_buy_Cl']
+            current_min_call_name = row['long_box_L_call_option_name']
+            current_min_put_price = row['long_box_buy_Ph']
+            current_min_put_name = row['long_box_H_put_option_name']
+            current_spread = current_long_box_max_pnl
+            current_min_mature_time = row['long_box_mature']
+            current_max_mature_time = row['long_box_mature']
+            self.current_position = {
+                'max_call_price': current_max_call_price,
+                'max_call_name': current_max_call_name,
+                'max_put_price': current_max_put_price,
+                'max_put_name': current_max_put_name,
+                'min_call_price': current_min_call_price,
+                'min_call_name': current_min_call_name,
+                'min_put_price': current_min_put_price,
+                'min_put_name': current_min_put_name,
+                'current_time': current_time,
+                'mature_time': max(current_min_mature_time, current_max_mature_time)
+            }
+            self.current_capital += current_spread
+            self.trade_profits.append({'current_time': current_time, 'current_spread': current_spread})
+            logger.info(f"self.current_capital {self.current_capital}, current_spread {current_spread}")
+            self.trade_positions.append(self.current_position)
+            self.num_trades += 1
+        else:
+            current_max_call_price = row['short_box_buy_Ch']
+            current_max_call_name = row['short_box_H_call_option_name']
+            current_max_put_price = row['short_box_buy_Pl']
+            current_max_put_name = row['short_box_L_put_option_name']
+            current_min_call_price = row['short_box_sell_Cl']
+            current_min_call_name = row['short_box_L_call_option_name']
+            current_min_put_price = row['short_box_sell_Ph']
+            current_min_put_name = row['short_box_H_put_option_name']
+            current_spread = current_short_box_max_pnl
+            current_min_mature_time = row['short_box_mature']
+            current_max_mature_time = row['short_box_mature']
+            self.current_position = {
+                'max_call_price': current_max_call_price,
+                'max_call_name': current_max_call_name,
+                'max_put_price': current_max_put_price,
+                'max_put_name': current_max_put_name,
+                'min_call_price': current_min_call_price,
+                'min_call_name': current_min_call_name,
+                'min_put_price': current_min_put_price,
+                'min_put_name': current_min_put_name,
+                'current_time': current_time,
+                'mature_time': max(current_min_mature_time, current_max_mature_time)
+            }
+            self.current_capital += current_spread
+            self.trade_profits.append({'current_time': current_time, 'current_spread': current_spread})
+            logger.info(f"self.current_capital {self.current_capital}, current_spread {current_spread}")
+            self.trade_positions.append(self.current_position)
+            self.num_trades += 1
+
+    # 创建一个函数来模拟交易
+    def paper_trade(self, row):
+        # 如果没有持仓，直接开仓
+        if not self.current_position:
+            self.rebalance_box_spread_position(row)
+            # logger.info(f"开仓: {self.current_position}")
+        else:
+            if self.arraive_time(row['snapshot_time']):
+                # 平仓
+                self.rebalance_box_spread_position(row)
+                # logger.info(f"平掉到期仓位后开仓: {self.current_position}")
+
+    def trade(self):
+        # 对time_spread中的每一行应用paper_trade函数
+        self.time_spread.apply(self.paper_trade, axis=1)
+
+        # 如果最后还有持仓，平掉它
+        # if current_position:
+        #     final_value = time_spread.iloc[-1]['max_spread'] - (current_position['call'] - current_position['put'])
+        #     current_capital += final_value
+        #     trade_profits.append(final_value)
+        #     print(f"最终平仓: {current_position}")
+        #     print(f"最终收益: {final_value}")
+
+        # 计算总收益
+        total_profit = self.current_capital - self.initial_capital
+        total_return = (self.current_capital / self.initial_capital - 1) * 100
+
+        print(f"初始资金: {self.initial_capital}")
+        print(f"最终资金: {self.current_capital}")
+        print(f"总收益: {total_profit}")
+        print(f"总收益率: {total_return:.2f}%")
+        print(f"年化收益率: {total_return ** (24 * 365 / len(self.time_spread)):.2f}%")
+        trade_profits = pd.DataFrame(self.trade_profits)
+        trade_positions = pd.DataFrame(self.trade_positions)
+        self.trade_trails = pd.merge(trade_profits, trade_positions, on='current_time')
+        # 计算其他统计数据
+
+        avg_profit_per_trade = trade_profits['current_spread'].sum() / self.num_trades if self.num_trades > 0 else 0
+        max_profit = max(trade_profits['current_spread'])
+        min_profit = min(trade_profits['current_spread'])
+
+        print(f"交易次数: {self.num_trades}")
+        print(f"平均每笔交易收益: {avg_profit_per_trade:.2f}")
+        print(f"最大单笔收益: {max_profit:.2f}")
+        print(f"最小单笔收益: {min_profit:.2f}")
+
+    def analyze_trade(self):
+        import plotly.graph_objects as go
+        import pandas as pd
+
+        # 计算累积净值
+        self.trade_trails['cumulative_return'] = (self.trade_trails['current_spread']).cumsum()
+
+        # 计算最大回撤
+        self.trade_trails['cumulative_max'] = self.trade_trails['cumulative_return'].cummax()
+        self.trade_trails['drawdown'] = self.trade_trails['cumulative_return'] / self.trade_trails['cumulative_max'] - 1
+
+        # 创建收益曲线图
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.02)
+
+        # 添加累积净值折线图
+        fig.add_trace(go.Scatter(x=self.trade_trails['current_time'], y=self.trade_trails['cumulative_return'],
+                                 mode='lines+markers', name='累积净值'), row=1, col=1)
+        # 调整每笔收益散点图以使其更加显眼，并在每个点上标明此单收益
+        fig.add_trace(go.Scatter(x=self.trade_trails['current_time'], y=self.trade_trails['current_spread'],
+                                 mode='markers+text', name='每笔收益', marker_color='green', opacity=1,
+                                 text=[f"{round(value, 2)}" for value in self.trade_trails['current_spread']],
+                                 textposition='top center',
+                                 textfont=dict(size=14, color='black')), row=2, col=1)
+
+        # 更新布局
+        fig.update_layout(
+            title='收益曲线图',
+            xaxis_title='时间',
+            yaxis_title='累积净值',
+            yaxis2_title='单笔收益',
+            legend=dict(x=0, y=1.2, orientation='h')
+        )
+
+        fig.show()
 
 
 if __name__ == '__main__':
