@@ -5,6 +5,8 @@
 @Author：fdguuwzj
 @Time：2024/10/21 16:15
 """
+from math import sqrt
+
 # -*- coding:utf-8 -*-
 """
 @FileName：main.py
@@ -198,19 +200,36 @@ class BackTrader:
     def analyze_trade(self):
         # 计算总收益
         total_profit = self.current_capital - self.initial_capital
-        total_return = (self.current_capital / self.initial_capital - 1) * 100
+        total_return = (self.current_capital / self.initial_capital - 1)
 
         print(f"初始资金: {self.initial_capital}")
         print(f"最终资金: {self.current_capital}")
         print(f"总收益: {total_profit}")
-        print(f"总收益率: {total_return:.2f}%")
+        print(f"总收益率: {total_return * 100:.2f}%")
         # 获取时长
-        print(f"年化收益率: {100*((1 + total_return/100) ** (24 * 365 / len(self.time_stamps)) - 1):.2f}%")
+        print(f"APR: {100*(1 + total_return * (24 * 365 / len(self.time_stamps))):.2f}%")
+        print(f"APY: {100*((1 + total_return) ** (24 * 365 / len(self.time_stamps)) - 1):.2f}%")
         trade_profits = pd.DataFrame(self.trade_profits)
         trade_positions = pd.DataFrame(self.trade_positions)
         self.trade_trails = pd.merge(trade_profits, trade_positions, on='current_time')
-        # 计算其他统计数据
+        self.trade_trails['return_per_time'] = self.trade_trails['pnl']/self.initial_capital
+        self.trade_trails['curve'] = (self.trade_trails['pnl'].expanding().sum() + self.initial_capital)/self.initial_capital
 
+
+        self.trade_trails['max2here'] = self.trade_trails['curve'].expanding().max()
+        # 计算到历史最高值到当日的跌幅,draw-down
+        self.trade_trails['dd2here'] = self.trade_trails['curve'] / self.trade_trails['max2here'] - 1
+        # 计算最大回撤,以及最大回撤结束时间
+        end_date, max_draw_down = tuple(self.trade_trails.sort_values(by=['dd2here']).iloc[0][['current_time', 'dd2here']])
+        # 计算最大回撤开始时间
+        start_date = self.trade_trails[self.trade_trails['current_time'] <= end_date].sort_values(by='curve', ascending=False).iloc[0][
+            'current_time']
+        sharpe_ratio = self.trade_trails['return_per_time'].mean() / self.trade_trails['return_per_time'].std()
+        # 计算其他统计数据
+        print(f"sharpe_ratio: {sharpe_ratio*sqrt(365):.2f}")
+        print(f'max_draw_down: {max_draw_down:.2f}')
+        print(f'最大回撤开始时间:{start_date}')
+        print(f'最大回撤结束时间:{end_date}')
         avg_profit_per_trade = trade_profits['pnl'].sum() / self.num_trades if self.num_trades > 0 else 0
         max_profit = max(trade_profits['pnl'])
         min_profit = min(trade_profits['pnl'])
@@ -220,34 +239,46 @@ class BackTrader:
         print(f"最大单笔收益: {max_profit:.2f}")
         print(f"最小单笔收益: {min_profit:.2f}")
 
+        self.trade_trails = pd.merge(self.trade_trails, self.target_data, left_on='current_time', right_on='snapshot_time', how='left')
 
-
-        # 计算累积净值
-        self.trade_trails['cumulative_return'] = (self.trade_trails['pnl']).cumsum()
-
-        # 计算最大回撤
-        self.trade_trails['cumulative_max'] = self.trade_trails['cumulative_return'].cummax()
-        self.trade_trails['drawdown'] = self.trade_trails['cumulative_return'] / self.trade_trails['cumulative_max'] - 1
 
         # 创建收益曲线图
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.02)
-
+        fig = make_subplots(
+            rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.02,
+            specs=[
+                [{"type": "xy", "secondary_y": True}],
+                [{"type": "xy", "secondary_y": False}],
+            ],
+        )
         # 添加累积净值折线图
-        fig.add_trace(go.Scatter(x=self.trade_trails['current_time'], y=self.trade_trails['cumulative_return'],
+        fig.add_trace(go.Scatter(x=self.trade_trails['current_time'], y=self.trade_trails['curve'],
                                  mode='lines+markers', name='累积净值'), row=1, col=1)
+        # 添加累积净值折线图
+        fig.add_trace(go.Scatter(x=self.trade_trails['current_time'], y=self.trade_trails['btc_price']/self.trade_trails['btc_price'].loc[0],
+                                 mode='lines+markers', name='btc_price'), row=1, col=1)
+        fig.add_trace(
+            go.Scatter(x=self.trade_trails['current_time'], y=self.trade_trails['dd2here'],
+                       mode='lines',
+                       name='max_drawdown',
+                       fill='tozeroy',  # fill参数设置为'tozeroy'表示填充到 y=0 的水平线
+                       fillcolor='rgba(65,105,225,0.2)',  # 设置填充颜色和透明度
+                       line={'color': 'rgba(65,105,225,0.2)', 'width': 1}),
+            secondary_y=True, row=1, col=1,
+        )
         # 调整每笔收益散点图以使其更加显眼，并在每个点上标明此单收益
         fig.add_trace(go.Scatter(x=self.trade_trails['current_time'], y=self.trade_trails['pnl'],
-                                 mode='markers+text', name='每笔收益', marker_color='green', opacity=1,
-                                 text=[f"{round(value, 2)}" for value in self.trade_trails['pnl']],
-                                 textposition='top center',
-                                 textfont=dict(size=14, color='black')), row=2, col=1)
+                                 mode='markers+text', name='每笔收益', marker_color='green', opacity=1,),
+                                 # text=[f"{round(value, 2)}" for value in self.trade_trails['pnl']],
+                                 # textposition='top center',
+                                 # textfont=dict(size=14, color='black')),
+                                 row=2, col=1)
 
         # 更新布局
         fig.update_layout(
             title='收益曲线图',
             xaxis_title='时间',
             yaxis_title='累积净值',
-            yaxis2_title='单笔收益',
+            yaxis2_title='最大回撤',
             legend=dict(x=0, y=1.2, orientation='h')
         )
         import plotly.io as pio
@@ -259,6 +290,6 @@ class BackTrader:
 
 if __name__ == '__main__':
     data = pd.read_pickle('data/btc_option_data_for_trade.pkl')
-    backtrader = BackTrader(initial_capital=60000,data=data, date_interval=['2024-01-01 00:00:00', '2024-07-27 00:00:00'], fraction=0.01, exe_price_gear=3, mature_gear=0)
+    backtrader = BackTrader(initial_capital=60000,data=data, date_interval=['2024-01-23 00:00:00', '2024-07-27 00:00:00'], fraction=0.01, exe_price_gear=1, mature_gear=0)
     backtrader.trade()
     backtrader.analyze_trade()
