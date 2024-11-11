@@ -6,8 +6,10 @@
 @Time：2023-12-11 16:39
 """
 import numpy as np
+import pandas as pd
 from scipy.stats import norm
-
+from plotly.subplots import make_subplots
+import plotly.graph_objects as go
 eps=1e-10
 # bs公式求期权价格
 def vanilla_option(S, K, T, r, sigma, q=0, option_type='call'):
@@ -210,6 +212,42 @@ def theta_option(S, K, sigma, r, T, option_type='call', year=365):
     else:
         return (-(S * sigma * np.exp(-pow(d1, 2) / 2)) / (2 * np.sqrt(2 * np.pi * T)) + r * K * np.exp(
             -r * T) * norm.cdf(-d2)) / year
+
+
+
+def btc_vol_df(btc_path='data/BTC-USDT.pkl'):
+    btc_price = pd.read_feather(btc_path)
+    btc_price['btc_volatility'] = btc_price['open'].pct_change(1).rolling(15 * 24).std()
+    return btc_price
+
+def plot_btc(btc_path='data/BTC-USDT.pkl'):
+    btc_price = btc_vol_df(btc_path)
+    # 创建收益曲线图
+    fig = make_subplots(
+        rows=1, cols=1, shared_xaxes=True, vertical_spacing=0.02,
+        specs=[
+            [{"type": "xy", "secondary_y": True}],
+        ],
+    )
+
+    fig.add_trace(go.Scatter(x=btc_price['candle_begin_time'],
+                             y=btc_price['close'],
+                             mode='lines', name='btc_price'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=btc_price['candle_begin_time'], y=btc_price['btc_volatility'],
+                             mode='lines', name='btc_volatility'), secondary_y=True, row=1, col=1)
+
+    # 更新布局
+    fig.update_layout(
+        title=f'btc',
+        xaxis_title='时间',
+        yaxis_title='累积净值',
+        legend=dict(x=0, y=1.2, orientation='h')
+    )
+    import plotly.io as pio
+
+    pio.renderers.default = 'browser'  # 或尝试其他渲染模式
+    fig.show()
+
 
 
 if __name__ == '__main__':
