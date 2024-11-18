@@ -8,9 +8,9 @@
 """
 import pandas as pd
 
-deribit_data = pd.read_pickle(r'data/all_processed_deribit_data.pkl')
+deribit_data = pd.read_pickle(r'data/all_processed_deribit_data1118.pkl')
 # 双卖回测
-data = pd.read_pickle('data/btc_option_data_for_trade.pkl')
+data = pd.read_pickle('data/btc_option_data_for_trade1115.pkl')
 deribit_data = deribit_data[['hour', 'expiration', 'strike_price', 'symbol', 'mark_price', 'type']]
 deribit_data.rename(columns={'hour': 'snapshot_time',
                              'expiration': 'expiry_date',
@@ -40,5 +40,5 @@ print(duplicates.sort_values(['snapshot_time', 'instrument_name']).head())
 final_data.drop_duplicates(subset=['snapshot_time', 'instrument_name'], keep='first', inplace=True)
 print('删除重复数据后的数据量:', len(final_data))
 
-final_data.to_pickle(r'data/btc_option_data_for_trade1105.pkl')
+final_data.to_pickle(r'data/btc_option_data_for_trade1118.pkl')
 print(final_data)
