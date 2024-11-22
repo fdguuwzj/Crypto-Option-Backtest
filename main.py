@@ -17,12 +17,14 @@ if __name__ == '__main__':
     # backtrader.analyze_trade()
 
     # 双卖回测
-    data = pd.read_pickle(os.path.join(BACKTEST_DIR, 'btc_option_data_for_trade1118.pkl'))
+    data = pd.read_pickle(os.path.join(BACKTEST_DIR, 'btc_option_data_for_trade_all_year.pkl'))
     # 统计每天的数据条数
-    daily_counts = data.groupby(data['snapshot_time'].dt.date).size()
-    print('每日数据条数统计:')
-    print(daily_counts)
-    backtrader = BackTrader(initial_capital=5000, strategy='buy_straddle' ,data=data, date_interval=['2024-10-29 00:00:00', '2024-11-18 00:00:00'], fraction=0.001, exe_price_gear=1, mature_gear= 0, open_contracts_num=0.1)
+    # daily_counts = data.groupby(data['snapshot_time'].dt.date).size()
+    # print('每日数据条数统计:')
+    # print(daily_counts)
+    # backtrader = BackTrader(initial_capital=5000, strategy_params={'name': 'time_straddle','exe_price_gear1': 4, 'mature_gear1': 0 ,'exe_price_gear2': 1, 'mature_gear2': 3} ,data=data, date_interval=['2024-01-23 00:00:00', '2024-11-18 00:00:00'], fraction=0.001, portfolio_num=0.1)
+    # backtrader = BackTrader(initial_capital=5000, strategy_params={'name': 'sell_straddle','exe_price_gear': 6, 'mature_gear': 0} ,data=data, date_interval=['2020-01-01 00:00:00', '2024-11-18 00:00:00'], fraction=0.001, portfolio_num=0.1)
+    backtrader = BackTrader(initial_capital=5000, strategy_params={'name': 'buy_straddle','exe_price_gear': 1, 'mature_gear': 0} ,data=data, date_interval=['2020-01-01 00:00:00', '2024-11-18 00:00:00'], fraction=0.001, portfolio_num=0.1)
     backtrader.trade()
     backtrader.analyze_trade()
 
