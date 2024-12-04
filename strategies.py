@@ -12,7 +12,7 @@ from config import BACKTEST_DIR, OUTPUT_DIR
 
 # -*- coding:utf-8 -*-
 """
-@FileName：main.py
+@FileName：get_trade_records.py
 @Description：
 @Author：fdguuwzj
 @Time：2024-09-26 11:35
