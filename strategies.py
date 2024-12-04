@@ -203,6 +203,33 @@ class BackTrader:
             logger.warning(f'{current_time} miss data, down_put is {down_put}, up_call is {up_call}, skipped')
 
 
+
+    def open_buy_calender_position(self, current_time: pd.Timestamp, time_options: pd.DataFrame):
+        # 空仓 -》 持仓
+        # 开近月平值双卖 开远月平值双买
+        btc_price = time_options['btc_price'].values[0]
+
+        mature_date1 = self.get_mature_date(time_options, current_time, self.strategy_params['mature_gear1'])
+        time_options1 = time_options[time_options['expiry_date'] == mature_date1]
+        exe_prices1 = sorted(time_options1['exe_price'].astype('float').unique())
+        down_exe_price1, up_exe_price1 = self.get_exe_price(btc_price, exe_prices1, self.strategy_params['exe_price_gear1'])
+        down_put1 = self.extract_option(time_options1, down_exe_price1, 'P', 'sell', self.portfolio_num)
+        up_call1 = self.extract_option(time_options1, up_exe_price1, 'C', 'sell', self.portfolio_num)
+
+        mature_date2 = self.get_mature_date(time_options, current_time, self.strategy_params['mature_gear2'])
+        time_options2 = time_options[time_options['expiry_date'] == mature_date2]
+        exe_prices2 = sorted(time_options2['exe_price'].astype('float').unique())
+        down_exe_price2, up_exe_price2 = self.get_exe_price(btc_price, exe_prices2, self.strategy_params['exe_price_gear2'])
+        down_put2 = self.extract_option(time_options2, down_exe_price2, 'P', 'buy', self.portfolio_num)
+        up_call2 = self.extract_option(time_options2, up_exe_price2, 'C', 'buy', self.portfolio_num)
+        if down_put1 and up_call1 and down_put1 and up_call1:
+            self.current_position = Position(current_time, [down_put1, up_call1, down_put2, up_call2])
+            position_pnl =  self.sell(down_put1, self.portfolio_num)*down_put1.btc_price + self.sell(up_call1, self.portfolio_num)*up_call1.btc_price  - self.buy(down_put2, self.portfolio_num)*down_put2.btc_price - self.buy(up_call2, self.portfolio_num)*up_call2.btc_price
+            self.after_open_position(current_time, position_pnl, btc_price)
+        else:
+            logger.warning(f'{current_time} miss data, options are {[down_put1, up_call1, down_put2, up_call2]}')
+
+
     def open_time_straddle_position(self, current_time: pd.Timestamp, time_options: pd.DataFrame):
         # 空仓 -》 持仓
         # 开近月平值双卖 开远月平值双买
