@@ -8,6 +8,7 @@
 import time
 import traceback
 
+import requests
 from loguru import logger
 from urllib3.exceptions import ReadTimeoutError
 
@@ -75,3 +76,16 @@ def retry_wrapper(
     else:
         if if_exit:
             raise ValueError(func_name, '报错重试次数超过上限，程序退出。')
+
+
+def get_binance_usdt_futures_tickers():
+    url = "https://fapi.binance.com//eapi/v1/userTrades"  # Binance Futures API endpoint
+    response = requests.get(url)
+    data = response.json()
+
+    usdt_futures_tickers = [
+        symbol['symbol'] for symbol in data['symbols']
+        if symbol['quoteAsset'] == 'USDT'
+    ]
+
+    return usdt_futures_tickers
