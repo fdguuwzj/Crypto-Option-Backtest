@@ -12,6 +12,19 @@ from plotly.subplots import make_subplots
 import plotly.graph_objects as go
 episode = 1e-16
 # bs公式求期权价格
+def option_type_handler(option_type: str):
+    if option_type == 'call' or option_type == 'C' or option_type == 'c':
+        return 'call'
+    elif option_type == 'put' or option_type == 'P' or option_type == 'p':
+        return 'put'
+    else:
+        print("option_type 类型输入错误")
+        raise TypeError
+def calc_d1(S, K, T, r, sigma):
+    return (np.log(S / K) + (r + pow(sigma, 2) / 2) * T) / (sigma * np.sqrt(T) + episode)
+
+def calc_d2(S, K, T, r, sigma):
+    return calc_d1(S, K, T, r, sigma) - sigma * np.sqrt(T)
 def vanilla_option(S, K, T, r, sigma, q=0, option_type='call'):
     """
     S: spot price
@@ -23,16 +36,13 @@ def vanilla_option(S, K, T, r, sigma, q=0, option_type='call'):
     option_type: 期权类型
     return 期权定价
     """
-
-    d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T) + episode)
+    d1 = calc_d1(S, K, T, r, sigma)
     d2 = d1  - sigma * np.sqrt(T)
-    if option_type == 'call' or option_type == 'C' or option_type == 'c':
+    if option_type_handler(option_type) == 'call':
         p = (S * np.exp(-q * T) * norm.cdf(d1, 0.0, 1.0) - K * np.exp(-r * T) * norm.cdf(d2, 0.0, 1.0))
-    elif option_type == 'put'or option_type == 'P' or option_type == 'p':
+    elif option_type_handler(option_type) ==  'put':
         p = (K * np.exp(-r * T) * norm.cdf(-d2, 0.0, 1.0) - S * np.exp(-q * T) * norm.cdf(-d1, 0.0, 1.0))
-    else:
-        print("option_type 类型输入错误")
-        return None
+
     return p
 
 # bs公式求期权预估收益
@@ -50,21 +60,21 @@ def vanilla_option_return(S, K, T, r, sigma, c, commission=0, q=0, trade_type='b
     option_type:期权类型
     return:bs预估收益
     """
-    d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T)+episode)
-    d2 = (np.log(S / K) + (r - 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T)+episode)
+    d1 = calc_d1(S, K, T, r, sigma)
+    d2 = d1  - sigma * np.sqrt(T)
     if trade_type == 'buy':
         c = c * (1 - commission)
-        if option_type == 'call':
+        if option_type_handler(option_type) == 'call':
             p = (S * np.exp(-q * T) * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)) - c
-        elif option_type == 'put':
+        elif option_type_handler(option_type) == 'put':
             p = K * np.exp(-r * T) * norm.cdf(-d2) - S* np.exp(-q * T) * norm.cdf(-d1) - c
         else:
             print("option_type 类型输入错误")
             return None
     elif trade_type == 'sell':
-        if option_type == 'call':
+        if option_type_handler(option_type) == 'call':
             p = c - (S * np.exp(-q * T) * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)) * (1 - commission)
-        elif option_type == 'put':
+        elif option_type_handler(option_type) == 'put':
             p = c - (K * np.exp(-r * T) * norm.cdf(-d2) - S * np.exp(-q * T) * norm.cdf(-d1)) * (1 - commission)
         else:
             print("option_type 类型输入错误")
@@ -76,9 +86,9 @@ def vanilla_option_return(S, K, T, r, sigma, c, commission=0, q=0, trade_type='b
 
 # 求期权到期价格
 def ytm_option(S,K, T, r, sigma, q=0, option_type='call'):
-    if option_type == 'call':
+    if option_type_handler(option_type) == 'call':
         p = np.maximum(S-K, 0)
-    elif option_type == 'put':
+    elif option_type_handler(option_type)  == 'put':
         p = np.maximum(K-S, 0)
     else:
         print("option_type 类型输入错误")
@@ -100,7 +110,7 @@ def ytm_option_return(S, K, c, commission, trade_type='buy', option_type='call')
 
     if trade_type == 'buy':
         c = c * (1 + commission)
-        if option_type == 'call':
+        if option_type_handler(option_type) == 'call':
             p = np.maximum(S-K-c, -c)
         elif option_type == 'put':
             p = np.maximum(K-S-c, -c)
@@ -108,9 +118,9 @@ def ytm_option_return(S, K, c, commission, trade_type='buy', option_type='call')
             print("option_type 类型输入错误")
             return None
     elif trade_type == 'sell':
-        if option_type == 'call':
+        if option_type_handler(option_type) == 'call':
             p = np.maximum(c+(K-S)(1 + commission), c)
-        elif option_type == 'put':
+        elif option_type_handler(option_type)  == 'put':
             p = np.maximum(c+(S-K)(1 + commission), c)
         else:
             print("option_type 类型输入错误")
@@ -151,8 +161,8 @@ def delta_option(S, K, sigma, r, T, option_type='call'):
     #     r 无风险收益率
     #     T 期权剩余时间（年）
     #     option_type 期权类型；'call'看涨，'put'看跌
-    d1 = (np.log(S / K) + (r + pow(sigma, 2) / 2) * T) / (sigma * np.sqrt(T))
-    if option_type == 'call':  # call
+    d1 = calc_d1(S, K, T, r, sigma)
+    if option_type_handler(option_type) == 'call':  # call
         delta = norm.cdf(d1)
     else:
         delta = norm.cdf(d1) - 1
@@ -167,13 +177,8 @@ def delta_without_sigma(S, K, p, r, T, option_type='call'):
     #     r 无风险收益率
     #     T 期权剩余时间（年）
     #     option_type 期权类型；'call'看涨，'put'看跌
-    sigma = iv_option(S, K, T, r, p, q=0, option_type=option_type)
-    d1 = (np.log(S / K) + (r + pow(sigma, 2) / 2) * T) / (sigma * np.sqrt(T))
-    if option_type == 'call':  # call
-        delta = norm.cdf(d1)
-    else:
-        delta = norm.cdf(d1) - 1
-    return delta
+    sigma = iv_option(S, K, T, r, p, option_type=option_type)
+    return delta_option(S, K, sigma, r, T, option_type=option_type)
 
 
 def gamma_option(S, K, sigma, r, T):
@@ -183,8 +188,8 @@ def gamma_option(S, K, sigma, r, T):
     #     sigma 基础资产价格百分比变化的波动率
     #     r 无风险收益率
     #     T 期权剩余时间（年）
-    d1 = (np.log(S / K) + (r + pow(sigma, 2) / 2) * T) / (sigma * np.sqrt(T))
-    return np.exp(-pow(d1, 2) / 2) / (S * sigma * np.sqrt(2 * np.pi * T))
+    d1 = calc_d1(S, K, T, r, sigma)
+    return norm.pdf(d1) / (S * sigma * np.sqrt(T))
 
 def gamma_without_sigma(S, K, p, r, T, option_type='call'):
     """
@@ -196,10 +201,9 @@ def gamma_without_sigma(S, K, p, r, T, option_type='call'):
     :param option_type: 期权类型；'call'看涨，'put'看跌
     :return: 欧式期权的Gamma值
     """
-
     sigma = iv_option(S, K, T, r, p, q=0, option_type=option_type)
-    d1 = (np.log(S / K) + (r + pow(sigma, 2) / 2) * T) / (sigma * np.sqrt(T))
-    return np.exp(-pow(d1, 2) / 2) / (S * sigma * np.sqrt(2 * np.pi * T))
+    return gamma_option(S, K, sigma, r, T)
+
 
 def vega_option(S, K, sigma, r, T):
     #     计算欧式期权的Vega值
@@ -208,8 +212,21 @@ def vega_option(S, K, sigma, r, T):
     #     sigma 基础资产价格百分比变化的波动率
     #     r 无风险收益率
     #     T 期权剩余时间（年）
-    d1 = (np.log(S / K) + (r + pow(sigma, 2) / 2) * T) / (sigma * np.sqrt(T))
-    return S * np.sqrt(T) * np.exp(-pow(d1, 2) / 2) / np.sqrt(2 * np.pi)
+    d1 = calc_d1(S, K, T, r, sigma)
+    return S * norm.pdf(d1) * np.sqrt(T)
+
+def vega_without_sigma(S, K, p, r, T, option_type='call'):
+    """
+    :param S: 基础资产价格
+    :param K: 行权价
+    :param p: 期权价格
+    :param r: 无风险收益率
+    :param T: 期权剩余时间（年）
+    :param option_type: 期权类型；'call'看涨，'put'看跌
+    :return: 欧式期权的Gamma值
+    """
+    sigma = iv_option(S, K, T, r, p, q=0, option_type=option_type)
+    return vega_option(S, K, sigma, r, T)
 
 
 def theta_option(S, K, sigma, r, T, option_type='call', year=365):
@@ -219,15 +236,46 @@ def theta_option(S, K, sigma, r, T, option_type='call', year=365):
     #     sigma 基础资产价格百分比变化的波动率
     #     r 无风险收益率
     #     T 期权剩余时间（年）
-    d1 = (np.log(S / K) + (r + pow(sigma, 2) / 2) * T) / (sigma * np.sqrt(T))
+    d1 = calc_d1(S, K, T, r, sigma)
     d2 = d1 - sigma * np.sqrt(T)
-    if option_type == 'call':
-        return (-(S * sigma * np.exp(-pow(d1, 2) / 2)) / (2 * np.sqrt(2 * np.pi * T)) - r * K * np.exp(
-            -r * T) * norm.cdf(d2)) / year
-    else:
-        return (-(S * sigma * np.exp(-pow(d1, 2) / 2)) / (2 * np.sqrt(2 * np.pi * T)) + r * K * np.exp(
-            -r * T) * norm.cdf(-d2)) / year
+    part1 = -S * norm.pdf(d1) * sigma / (2 * np.sqrt(T))
+    if option_type_handler(option_type) == 'call':
+        theta = part1 - r * K * np.exp(-r * T) * norm.cdf(d2)
+    elif option_type_handler(option_type) == "put":
+        theta = part1 + r * K * np.exp(-r * T) * norm.cdf(-d2)
+    return theta/year
 
+
+
+def theta_without_sigma(S, K, p, r, T, option_type='call', year=365):
+    """
+    :param S: 基础资产价格
+    :param K: 行权价
+    :param p: 期权价格
+    :param r: 无风险收益率
+    :param T: 期权剩余时间（年）
+    :param option_type: 期权类型；'call'看涨，'put'看跌
+    :param year: 年化系数
+    :return: 欧式期权的Gamma值
+    """
+
+    sigma = iv_option(S, K, T, r, p, q=0, option_type=option_type)
+    return theta_option(S, K, sigma, r, T, option_type=option_type, year=year)
+
+def rho_option(S, K, sigma, r, T, option_type='call'):
+    #     计算欧式期权的Theta值
+    #     S 基础资产价格
+    #     K 行权价
+    #     sigma 基础资产价格百分比变化的波动率
+    #     r 无风险收益率
+    #     T 期权剩余时间（年）
+    d1 = calc_d1(S, K, T, r, sigma)
+    d2 = d1 - sigma * np.sqrt(T)
+    if option_type_handler(option_type)  == "call":
+        rho = K * T * np.exp(-r * T) * norm.cdf(d2)
+    elif option_type_handler(option_type)  == "put":
+        rho = -K * T * np.exp(-r * T) * norm.cdf(-d2)
+    return rho
 
 
 def btc_vol_df(btc_path='data/BTC-USDT.pkl'):
