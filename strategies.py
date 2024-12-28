@@ -9,6 +9,7 @@ import os
 from math import sqrt
 
 from config import BACKTEST_DIR, OUTPUT_DIR
+from utils.options_utils import delta_without_sigma
 
 # -*- coding:utf-8 -*-
 """
@@ -39,6 +40,7 @@ class Option:
         self.ask_price = ask_price
         self.bid_price = bid_price
         self.mark_price = mark_price
+
         self.expiry_date = expiry_date
         self.exe_price = exe_price
         self.type = type
@@ -54,9 +56,17 @@ class Position:
         try:
             self.expiry_date = min([option.expiry_date for option in options]) if options else None
             self.volume = sum([abs(option.number*option.mark_price*option.btc_price)  for option in options])  if options else 0
+
         except Exception as e:
             print(e)
-    
+
+    def update_greeks(self, target_price: float, unrisk_rate: float, timestamp: pd.Timestamp):
+        for option in self.options:
+            delta = delta_without_sigma(target_price, option.exe_price, option.mark_price, unrisk_rate, option.expiry_date - timestamp , option_type='call')
+            gamma =
+            vega =
+            rho =
+
 
 
 class BackTrader:
@@ -342,6 +352,10 @@ class BackTrader:
             current_time = pd.to_datetime(time_stamp)
             time_data = self.data[self.data['snapshot_time'] == current_time]
             if not self.empty_position():
+                dynamic_hedger = DynamicHedger(self.current_position, time_stamp, time_data)
+                if self.dynamic_hedger.hedge_condition:
+                    self.dynamic_hedger.hedge()
+
                 if self.arraive_time(time_stamp):
                     # close position
                     self.close_position(time_stamp)
@@ -755,3 +769,38 @@ class BoxSpreadBackTrader:
         fig.show()
 
 
+
+class DynamicHedger:
+    def __init__(self, position, time_stamp, time_data):
+        self.position = position
+        self.time_stamp     =      time_stamp
+        self.time_data =           time_data
+
+    def at_time(self, time_stamp):
+        return time_stamp == self.time_stamp
+
+    def at_delta(self, threshold: float):
+        delta = 
+        return delta >= threshold  # 当delta达到设定的阈值时，返回true
+    
+    def keep_sum_hedge(self):
+        total_value = self.position.exe_price * self.position.number  # 当前仓位总价值
+        delta = self.calculate_delta()  # 计算当前delta
+
+        if delta != 0:
+            # 计算每单位仓位的delta变化
+            delta_per_unit = self.calculate_delta_per_unit()
+            if delta_per_unit != 0:
+                # 调整仓位数量以使总delta为0
+                adjustment = -delta / delta_per_unit  # 计算需要调整的数量
+                self.position.number += adjustment  # 更新仓位数量
+
+                # 确保仓位总价值不变
+                if self.position.number > 0:
+                    self.position.exe_price = total_value / self.position.number
+                else:
+                    self.position.exe_price = 0  # 如果仓位数量为0，设置执行价格为0
+
+    def calculate_delta_per_unit(self):
+        # 假设每个期权的delta是一个已知的属性
+        return self.position.delta  # 返回每单位仓位的delta变化
