@@ -39,9 +39,9 @@ def vanilla_option(S, K, T, r, sigma, q=0, option_type='call'):
     d1 = calc_d1(S, K, T, r, sigma)
     d2 = d1  - sigma * np.sqrt(T)
     if option_type_handler(option_type) == 'call':
-        p = (S * np.exp(-q * T) * norm.cdf(d1, 0.0, 1.0) - K * np.exp(-r * T) * norm.cdf(d2, 0.0, 1.0))
+        p = (S * np.exp(-q * T) * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2))
     elif option_type_handler(option_type) ==  'put':
-        p = (K * np.exp(-r * T) * norm.cdf(-d2, 0.0, 1.0) - S * np.exp(-q * T) * norm.cdf(-d1, 0.0, 1.0))
+        p = (K * np.exp(-r * T) * norm.cdf(-d2) - S * np.exp(-q * T) * norm.cdf(-d1))
 
     return p
 
@@ -189,7 +189,7 @@ def gamma_option(S, K, sigma, r, T):
     #     r 无风险收益率
     #     T 期权剩余时间（年）
     d1 = calc_d1(S, K, T, r, sigma)
-    return norm.pdf(d1) / (S * sigma * np.sqrt(T))
+    return norm.pdf(d1) / (S * sigma * np.sqrt(T) + episode)
 
 def gamma_without_sigma(S, K, p, r, T, option_type='call'):
     """
@@ -238,7 +238,7 @@ def theta_option(S, K, sigma, r, T, option_type='call', year=365):
     #     T 期权剩余时间（年）
     d1 = calc_d1(S, K, T, r, sigma)
     d2 = d1 - sigma * np.sqrt(T)
-    part1 = -S * norm.pdf(d1) * sigma / (2 * np.sqrt(T))
+    part1 = -S * norm.pdf(d1) * sigma / (2 * np.sqrt(T) + episode)
     if option_type_handler(option_type) == 'call':
         theta = part1 - r * K * np.exp(-r * T) * norm.cdf(d2)
     elif option_type_handler(option_type) == "put":
@@ -295,7 +295,7 @@ def plot_btc(btc_path='data/BTC-USDT.pkl'):
 
     fig.add_trace(go.Scatter(x=btc_price['candle_begin_time'],
                              y=btc_price['close'],
-                             mode='lines', name='btc_price'), row=1, col=1)
+                             mode='lines', name='target_price'), row=1, col=1)
     fig.add_trace(go.Scatter(x=btc_price['candle_begin_time'], y=btc_price['btc_volatility'],
                              mode='lines', name='btc_volatility'), secondary_y=True, row=1, col=1)
 
@@ -356,7 +356,7 @@ if __name__ == '__main__':
     #           ]
     results = []
 
-    # # 计算到期时长T，以小时为单位
+    # 计算到期时长T，以小时为单位
     current_time = datetime(2024, 12, 28, 15, 0)
     expiration_time = datetime(2025, 1, 31, 16, 0)
     T = (expiration_time - current_time).total_seconds() / 3600  # 转换为小时
@@ -372,5 +372,18 @@ if __name__ == '__main__':
 
 
     # print(iv_option(S=94278, K=86000, T=T / 365 / 24, r=0.1, p=2876, option_type='put'))
-
+    #
     # print(vanilla_option(S=94278, K=86000, T=T / 365 / 24, r=0.1, sigma = 0.589 , option_type='put'))
+
+    current_time = datetime(2024, 12, 28, 22, 48)
+    expiration_time = datetime(2025, 1, 31, 16, 0)
+    T = (expiration_time - current_time).total_seconds() / 3600  # 转换为小时
+    s = 190
+    p = 30
+    k = 180
+    type = 'call'
+    print(f"delta:{delta_without_sigma(s, k, p, 0.1, T/ 365 / 24, option_type=type)}")
+    print(f"gamma:{gamma_without_sigma(s, k, p, 0.1, T/ 365 / 24, option_type=type)}")
+    print(f"theta:{theta_without_sigma(s, k, p, 0.1, T/ 365 / 24, option_type=type)}")
+    print(f"vega:{vega_without_sigma(  s, k, p, 0.1, T/ 365 / 24, option_type=type)/100}")
+    print(f"iv:{iv_option(S=s, K=k, T=T / 365 / 24, r=0.1, p=p, option_type=type)}")

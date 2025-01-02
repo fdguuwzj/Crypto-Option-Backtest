@@ -8,8 +8,9 @@
 import os
 import pandas as pd
 from config import BACKTEST_DIR
-from strategies import BackTrader
+from strategies import BackTrader, TradingLogger
 from utils.options_utils import btc_vol_df
+from utils.utils import time_it, timer
 
 if __name__ == '__main__':
     # backtrader = BoxSpreadBackTrader()
@@ -17,14 +18,17 @@ if __name__ == '__main__':
     # backtrader.analyze_trade()
 
     # 双卖回测
-    data = pd.read_pickle(os.path.join(BACKTEST_DIR, 'btc_option_data_for_trade_all_year.pkl'))
+    with timer('read data'):
+        # data = pd.read_pickle(os.path.join(BACKTEST_DIR, 'btc_option_data_for_trade_all_year.pkl'))
+        data = pd.read_pickle(os.path.join(BACKTEST_DIR, 'btc_option_data_for_trade1118.pkl'))
     # 统计每天的数据条数
     # daily_counts = data.groupby(data['snapshot_time'].dt.date).size()
     # print('每日数据条数统计:')
     # print(daily_counts)
     # backtrader = BackTrader(initial_capital=5000, strategy_params={'name': 'time_straddle','exe_price_gear1': 4, 'mature_gear1': 0 ,'exe_price_gear2': 1, 'mature_gear2': 3} ,data=data, date_interval=['2024-01-23 00:00:00', '2024-11-18 00:00:00'], fraction=0.001, portfolio_num=0.1)
     # backtrader = BackTrader(initial_capital=5000, strategy_params={'name': 'sell_straddle','exe_price_gear': 6, 'mature_gear': 0} ,data=data, date_interval=['2020-01-01 00:00:00', '2024-11-18 00:00:00'], fraction=0.001, portfolio_num=0.1)
-    backtrader = BackTrader(initial_capital=5000, strategy_params={'name': 'buy_straddle','exe_price_gear': 1, 'mature_gear': 0} ,data=data, date_interval=['2020-01-01 00:00:00', '2024-11-18 00:00:00'], fraction=0.001, portfolio_num=0.1)
+    trading_logger = TradingLogger()
+    backtrader = BackTrader(initial_capital=5000, strategy_params={'name': 'sell_straddle','exe_price_gear': 1, 'mature_gear': 0} ,data=data, date_interval=['2024-11-01 00:00:00', '2024-11-18 00:00:00'], fraction=0.001, open_type='volume_ratio', open_value=0.01, trading_logger=trading_logger)
     backtrader.trade()
     backtrader.analyze_trade()
 
@@ -47,7 +51,7 @@ if __name__ == '__main__':
     # threshold = 0.0075
     # up_threshold = 0.008
     # down_threshold = 0.007
-    # btc_price = btc_vol_df()[['candle_begin_time', 'open', 'btc_volatility']].rename(columns={'candle_begin_time': 'current_time', 'open': 'btc_price'})
+    # target_price = btc_vol_df()[['candle_begin_time', 'open', 'btc_volatility']].rename(columns={'candle_begin_time': 'current_time', 'open': 'target_price'})
     # buy_trade_trails.drop_duplicates(subset='current_time', keep='first', inplace=True)
     # sell_trade_trails.drop_duplicates(subset='current_time', keep='first', inplace=True)
     # buy_trade_trails['curve_delta'] = buy_trade_trails['curve'].astype(np.float64).pct_change()
@@ -56,7 +60,7 @@ if __name__ == '__main__':
     # sell_trade_trails['curve_delta'].fillna(0, inplace=True)
     # all_trade_trails = pd.merge(buy_trade_trails, sell_trade_trails, on = 'current_time', suffixes = ['_x', '_y'])
     # all_trade_trails['current_time'] = pd.to_datetime(all_trade_trails['current_time'])
-    # all_trade_trails = pd.merge(all_trade_trails, btc_price, on = 'current_time')
+    # all_trade_trails = pd.merge(all_trade_trails, target_price, on = 'current_time')
     # # way 1 三状态机
     # all_trade_trails['curve_delta'] = np.where(all_trade_trails['btc_volatility'] >= up_threshold,
     #                                            all_trade_trails['curve_delta_y'],

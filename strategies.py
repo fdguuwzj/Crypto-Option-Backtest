@@ -7,87 +7,194 @@
 """
 import os
 from math import sqrt
+from typing import Literal, Dict
 
 from config import BACKTEST_DIR, OUTPUT_DIR
-from utils.options_utils import delta_without_sigma
-
-# -*- coding:utf-8 -*-
-"""
-@FileName：get_trade_records.py
-@Description：
-@Author：fdguuwzj
-@Time：2024-09-26 11:35
-"""
+from utils.options_utils import delta_without_sigma, gamma_without_sigma, vega_without_sigma, theta_without_sigma
 import pandas as pd
 import plotly.graph_objects as go
 from loguru import logger
 from plotly.subplots import make_subplots
 
+from utils.utils import timer
+
+UNRISK_RATE = 0.1
 time_spread = pd.read_csv(os.path.join(BACKTEST_DIR, 'min_max_options_couple.csv'))
 time_spread['short_box_mature'] = pd.to_datetime(time_spread['short_box_mature'])
 time_spread['long_box_mature'] = pd.to_datetime(time_spread['long_box_mature'])
 time_spread['snapshot_time'] = pd.to_datetime(time_spread['snapshot_time'])
 
 
-class Option:
+MIN_PRECISION = {
+    'btc': 1, # 2.1
+    'eth': 0, # 2
+    'sol': 0, # 2
+    'xrp': 0  # 2
+}
+
+
+def make_order(item, amount=1, fraction = 0.001, opponent=False, side: str = 'buy'):
+    """
+    进行下单
+    :param item:
+    :param amount: trade price
+    :param fraction: 
+    :param opponent:
+    :param side:  buy or sell
+    :return: cash_flow , bargained_price
+    """
+    assert side in ['buy', 'sell'], "side must be 'buy' or 'sell'"
+    if side == 'sell':
+        if opponent:
+            logger.debug(f'sell {amount} {item.name} at {item.bid_price}')
+            return item.bid_price * (1 - fraction) * amount, item.bid_price
+        else:
+            logger.debug(f'sell {amount} {item.name} at {item.mark_price}')
+            return item.mark_price * (1 + fraction) * amount, item.mark_price
+    else:
+        if opponent:
+            logger.debug(f'buy {amount} {item.name} at {item.ask_price}')
+            return - item.ask_price * (1 + fraction) * amount, item.ask_price
+        else:
+            logger.debug(f'buy {amount} {item.name} at {item.mark_price}')
+            return - item.mark_price * (1 + fraction) * amount, item.mark_price
+
+
+
+
+class LinearInstrument:
+    """
+    线性产品
+    """
     def __init__(self, snapshot_time: str = '0',
                  name: str = '0', ask_price: float = 0,
-                 bid_price: float = 0, mark_price: float = 0,
-                 expiry_date: pd.Timestamp = 0, exe_price: float = 0.0,
-                 type: str = 'C', btc_price: float = 0.0, side: str = 'buy', number: float = 1):
+                 bid_price: float = 0, mark_price: float = 0, type: float='long',
+                 expiry_date: pd.Timestamp = 0, quote: Literal['cm', 'um'] = 'cm'):
         self.snapshot_time = snapshot_time
         self.name = name
         self.ask_price = ask_price
         self.bid_price = bid_price
         self.mark_price = mark_price
+        self.type = type # long or short
+        self.expiry_date = expiry_date
+        self.quote = quote
 
+class Option(LinearInstrument):
+    def __init__(self, snapshot_time: str = '0', name: str = '0', ask_price: float = 0, bid_price: float = 0,
+                 mark_price: float = 0, expiry_date: pd.Timestamp = 0, exe_price: float = 0.0, option_type: str = 'C',
+                 target_price: float = 0.0,  quote: Literal['cm', 'um'] = 'cm'):
+        super().__init__(snapshot_time=snapshot_time, name=name, ask_price=ask_price, bid_price=bid_price, mark_price=mark_price, quote = quote)
+        self.snapshot_time = snapshot_time
+        self.name = name
+        self.ask_price = ask_price if quote == 'um' else ask_price*target_price
+        self.bid_price = bid_price if quote == 'um' else bid_price*target_price
+        self.mark_price = mark_price if quote == 'um' else mark_price*target_price
         self.expiry_date = expiry_date
         self.exe_price = exe_price
-        self.type = type
-        self.btc_price = btc_price
+        self.option_type = option_type
+        self.target_price = target_price
+
+
+
+    def update_greeks(self, target_price: float, unrisk_rate: float, timestamp: pd.Timestamp):
+
+        self.delta = delta_without_sigma(target_price, self.exe_price, self.mark_price , unrisk_rate, (self.expiry_date - timestamp).seconds / 3600, option_type=self.option_type)
+        self.gamma = gamma_without_sigma(target_price, self.exe_price, self.mark_price, unrisk_rate, (self.expiry_date - timestamp).seconds / 3600, option_type=self.option_type)
+        self.vega = vega_without_sigma(target_price, self.exe_price, self.mark_price, unrisk_rate, (self.expiry_date - timestamp).seconds / 3600, option_type=self.option_type) / 100
+        self.theta = theta_without_sigma(target_price, self.exe_price, self.mark_price, unrisk_rate, (self.expiry_date - timestamp).seconds / 3600, option_type=self.option_type)
+
+        return self.delta, self.gamma, self.vega, self.theta
+
+
+
+
+
+class Record:
+    # 单条持仓记录
+    def __init__(self, item: Literal[LinearInstrument, Option], amount:float, cost_price:float, side: Literal['buy', 'sell'] = 'buy'):
+        self.current_time = item.snapshot_time
+        self.item = item
+
+        self.amount : float = amount # 持仓数量，最小为0.1张
         self.side = side # 'buy' or 'sell'
-        self.number : float = number # 持仓数量，最小为0.1张
+        self.cost_price = cost_price
+        self.cost_volume = amount*cost_price
+        self.mark_volume = amount*item.mark_price
+        self.unpnl = 0  # unrealized pnl
+
 
 
 class Position:
-    def __init__(self, current_time: pd.Timestamp, options: list[Option] = None):
+    def __init__(self, current_time: pd.Timestamp, records: list[Record] = None, initial_capital: float = 0.0, current_capital: float = 0.0):
         self.current_time = current_time
-        self.options: list[Option] = options if options else None
+        self.records: list[Record] = records if records else None
+        self.initial_capital: float = initial_capital
+        self.current_capital: float = current_capital
+        self.maintaining_margin = 0.0
+        self.initial_margin = 0.0
+        self.delta = 0.0
+        self.gamma = 0.0
+        self.vega = 0.0
+        self.theta = 0.0
         try:
-            self.expiry_date = min([option.expiry_date for option in options]) if options else None
-            self.volume = sum([abs(option.number*option.mark_price*option.btc_price)  for option in options])  if options else 0
-
+            self.update()
         except Exception as e:
             print(e)
+    def update(self):
+        self.expiry_date = min(
+            [record.item.expiry_date for record in self.records if isinstance(record.item, Option)]) if self.records else None
+        self.cost_volume = sum(
+            [abs(record.cost_volume) for record in self.records if isinstance(record.item, Option)]) if self.records else 0
+        self.mark_volume = sum(
+            [abs(record.mark_volume) for record in self.records if isinstance(record.item, Option)]) if self.records else 0
 
     def update_greeks(self, target_price: float, unrisk_rate: float, timestamp: pd.Timestamp):
-        for option in self.options:
-            delta = delta_without_sigma(target_price, option.exe_price, option.mark_price, unrisk_rate, option.expiry_date - timestamp , option_type='call')
-            gamma =
-            vega =
-            rho =
+        if self.records:
+            for record in self.records:
+                if isinstance(record.item, Option):
+                    delta, gamma, vega, theta = record.item.update_greeks(target_price, unrisk_rate, timestamp)
+                    self.delta += delta
+                    self.gamma += gamma
+                    self.vega += vega
+                    self.theta += theta
+                elif isinstance(record.item, LinearInstrument): # if is linear thing
+                    self.delta += (1 if record.side == 'buy' else -1) if record.item.type == 'long' else (-1 if record.side == 'buy' else 1)
+        return self.delta, self.gamma, self.vega, self.theta
 
 
-
-class BackTrader:
-    def __init__(self, initial_capital=30000, strategy_params={'name': 'sell_straddle', 'exe_price_gear': 1, 'mature_gear': 0},
-                 data=None, fraction=0.001, portfolio_num=1, date_interval = ['2024-01-01 00:00:00', '2024-07-27 00:00:00']):
-        # 创建一个字典来存储当前持仓
-
-        self.current_position: Position=None
+class TradingLogger(object):
+    def __init__(self):
         # 记录所有的持仓信息
         self.trade_positions = []
         # 创建一个列表来存储每次交易的收益
         self.trade_profits = []
-        # 交易次数
-        self.num_trades = 0
+
+        self.num_trades = 0 # 交易次数
+        self.num_rounds = 0 # 交易轮次，交易一组策略算一轮
+
+
+
+class BackTrader:
+    def __init__(self, initial_capital=30000, strategy_params=None,trading_logger: TradingLogger = None,
+                 data=None, fraction=0.001, date_interval=None, open_type='IM', open_value=1, target: Literal['btc', 'eth', 'sol', 'xrp'] = 'btc', ):
+        # 创建一个字典来存储当前持仓
+
+        if date_interval is None:
+            date_interval = ['2024-01-01 00:00:00', '2024-07-27 00:00:00']
+        if strategy_params is None:
+            strategy_params = {'name': 'sell_straddle', 'exe_price_gear': 1, 'mature_gear': 0}
+        current_time: pd.Timestamp = pd.Timestamp.min  # 设置current_time的初始值为负无穷大
+        self.position: Position = Position(current_time, initial_capital=initial_capital, current_capital=initial_capital)
+        self.trading_logger = trading_logger
+        self.open_type = open_type
+        self.open_value = open_value
         # 初始资金
-        self.initial_capital = initial_capital
-        self.current_capital = initial_capital
+
         self.strategy_params = strategy_params
         # 输入数据
         self.data = data
-        self.target_data =  self.process_target_data(data)
+        self.target = target
+        self.target_data = self.process_target_data(data)
         self.time_stamps = data[(data['snapshot_time'] >= date_interval[0]) & (data['snapshot_time'] <= date_interval[1])]['snapshot_time'].unique()
         self.real_start_time = max(pd.to_datetime(date_interval[0]), self.data["snapshot_time"].min())
         self.real_end_time = min(pd.to_datetime(date_interval[1]), self.data["snapshot_time"].max())
@@ -96,101 +203,109 @@ class BackTrader:
         logger.info(f'回测起始日期: {self.real_start_time}, 回测结束日期: {self.real_end_time}, 总共时长: {(self.real_end_time - self.real_start_time).total_seconds() / 3600} h')
         # 交易设置
         self.fraction = fraction
-        self.portfolio_num = portfolio_num
+
         self.save_dir = os.path.join(OUTPUT_DIR, f'{strategy_params["name"]}_{self.real_start_time.strftime("%Y%m%d_%H%M%S")}_{self.real_end_time.strftime("%Y%m%d_%H%M%S")}')
         if not os.path.exists(self.save_dir):
             os.mkdir(self.save_dir)
 
+    def calc_open_amount(self, alloc_ratio: pd.DataFrame):
+        """
+
+        :param alloc_ratio: 当前账户净值
+        :return:
+        """
+        # todo realize different open ways.
+        if self.open_type == 'IM_ratio':
+            pass
+        elif  self.open_type == 'MM_ratio':
+            pass
+        elif   self.open_type == 'volume_ratio':
+            alloc_ratio['amount'] =round( self.position.current_capital*self.open_value*alloc_ratio['alloc_ratio']/alloc_ratio['price'], MIN_PRECISION[self.target])
+            return alloc_ratio
+        elif   self.open_type == 'volume_value':
+            pass
+        elif   self.open_type == 'num_value':
+            pass
+
+
 
     def process_target_data(self, data):
-        data1 = data[['snapshot_time', 'btc_price']].drop_duplicates().set_index('snapshot_time')
+
+        data1 = data[['snapshot_time', f'{self.target}_price']].drop_duplicates().set_index('snapshot_time')
         data2 = data1.copy()
         data2.index = data1.index - pd.Timedelta(seconds=1)
         all_data = pd.concat([data1, data2])
         all_data.sort_values(by=['snapshot_time'], inplace=True)
         return all_data
-    def sell(self, item, amount=1, opponent=False):
-
-        # 进行盘口挂单
-        if opponent:
-            return item.bid_price*(1-self.fraction)*amount
-        else:
-            return item.mark_price * (1 + self.fraction)*amount
-
-    def buy(self, item, amount=1, opponent=False):
-
-        # 进行盘口挂单
-        if opponent:
-            return item.ask_price*(1 + self.fraction)*amount
-        else:
-            return item.mark_price * (1 + self.fraction)*amount
 
 
-    def arraive_time(self, current_time: pd.Timestamp):
+
+    def arrive_time(self, current_time: pd.Timestamp):
         # 如果当前时间大于持仓的到期时间，平仓
-        if  not hasattr(self.current_position, 'expiry_date'):
+        if  not hasattr(self.position, 'expiry_date'):
             return True
-        elif current_time >= self.current_position.expiry_date:
-        # elif current_time >= self.current_position.expiry_date - pd.Timedelta(hours=8):
+        elif current_time >= self.position.expiry_date:
+        # elif current_time >= self.position.expiry_date - pd.Timedelta(hours=8):
             return True
         else:
             return False
 
-    def get_position(self, position : Position, alter_time=None):
-        position_dict = vars(position)
-        infos = position_dict.copy()
-        infos['options'] = [_.name for _ in position_dict['options']]
-        if alter_time:
-            infos['current_time'] = alter_time
-        return infos
+
     def close_position(self, current_time: pd.Timestamp):
         # 持仓 -》 空仓
 
-        now_btc_price = self.target_data.loc[current_time, 'btc_price']
+        now_btc_price = self.target_data.loc[current_time, f'{self.target}_price']
         # 只考虑到期行权情况
         position_pnl = 0
-        for option in self.current_position.options:
-            if option.side == 'buy' and option.type == 'C':
-                position_pnl += max(now_btc_price - option.exe_price, 0)*option.number
-            elif option.side == 'sell' and option.type == 'C':
-                position_pnl += min(-now_btc_price + option.exe_price, 0)*option.number
-            elif option.side == 'buy' and option.type == 'P':
-                position_pnl += max(-now_btc_price + option.exe_price , 0)*option.number
-            elif option.side == 'sell' and option.type == 'P':
-                position_pnl += min(now_btc_price - option.exe_price, 0)*option.number
+        for record in self.position.records:
+            if isinstance(record.item, Option):
+                option = record.item
+                if record.side == 'buy' and option.option_type == 'C':
+                    position_pnl += max(now_btc_price - option.exe_price, 0)*record.amount
+                elif record.side == 'sell' and option.option_type == 'C':
+                    position_pnl += min(-now_btc_price + option.exe_price, 0)*record.amount
+                elif record.side == 'buy' and option.option_type == 'P':
+                    position_pnl += max(-now_btc_price + option.exe_price , 0)*record.amount
+                elif record.side == 'sell' and option.option_type == 'P':
+                    position_pnl += min(now_btc_price - option.exe_price, 0)*record.amount
         # 为方便记账，这里将时间向前调整1s
-        self.trade_profits.append({'current_time': current_time-pd.Timedelta(seconds=1), 'pnl': position_pnl, 'pnl_type': 'return'})
+        self.trading_logger.trade_profits.append({'current_time': current_time-pd.Timedelta(seconds=1), 'pnl': position_pnl, 'pnl_type': 'return'})
 
-        self.trade_positions.append(self.get_position(self.current_position, alter_time=current_time-pd.Timedelta(seconds=1)))
-        self.current_capital += position_pnl
-        self.current_position = Position(current_time)
-        logger.info(f'{current_time}: close_position, pnl = {position_pnl}, current_capital: {self.current_capital}')
+        self.trading_logger.trade_positions.append(get_position(self.position, alter_time=current_time-pd.Timedelta(seconds=1)))
+        self.position.current_capital += position_pnl
+        self.position = Position(current_time)
+        logger.info(f'{current_time}: close_position, pnl = {position_pnl}, current_capital: {self.position.current_capital}')
 
 
     def after_open_position(self, current_time, position_pnl, btc_price):
-            logger.info(f'position opened:{current_time}, btc_price = {btc_price}')
-            for option in self.current_position.options:
-                logger.info(f'open {option.side} {option.number} {option.name} at {option.mark_price}btc')
-            self.trade_profits.append({'current_time': current_time, 'pnl': position_pnl, 'pnl_type': 'premium'})
-            self.current_capital += position_pnl
-            self.trade_positions.append(self.get_position(self.current_position))
-            self.num_trades += 1
-            logger.info(f'option premium: {position_pnl} current_capital: {self.current_capital}')
+            logger.info(f'position opened:{current_time}, target_price = {btc_price}')
+            for record in self.position.records:
+                logger.info(f'open {record.side} {record.amount} {record.item.name} at {record.item.mark_price}btc')
+            self.trading_logger.trade_profits.append({'current_time': current_time, 'pnl': position_pnl, 'pnl_type': 'premium'})
+            self.position.current_capital += position_pnl
+            self.trading_logger.trade_positions.append(get_position(self.position))
+            self.trading_logger.num_trades += 1
+            logger.info(f'option premium: {position_pnl} current_capital: {self.position.current_capital}')
 
     def open_sell_straddle_position(self, current_time: pd.Timestamp, time_options: pd.DataFrame):
         # 空仓 -》 持仓 
         # 开近月平值双卖
         mature_date = self.get_mature_date(time_options, current_time, self.strategy_params['mature_gear'])
         time_options = time_options[time_options['expiry_date'] == mature_date]
-        btc_price = time_options['btc_price'].values[0]
+        btc_price = time_options[f'{self.target}_price'].values[0]
         exe_prices = sorted(time_options['exe_price'].astype('float').unique())
         down_exe_price, up_exe_price = self.get_exe_price(btc_price, exe_prices, self.strategy_params['exe_price_gear'])
-        down_put = self.extract_option(time_options, down_exe_price, 'P', 'sell', self.portfolio_num)
-        up_call = self.extract_option(time_options, up_exe_price, 'C', 'sell', self.portfolio_num)
+
+        down_put = self.extract_option(time_options, down_exe_price, 'P', 'sell')
+        up_call = self.extract_option(time_options, up_exe_price, 'C', 'sell')
+        options = {}
         if down_put and up_call:
-            self.current_position = Position(current_time, [down_put, up_call])
-            position_pnl =  self.sell(down_put, self.portfolio_num)*down_put.btc_price + self.sell(up_call, self.portfolio_num)*up_call.btc_price
-            self.after_open_position(current_time, position_pnl, btc_price)
+            alloc_ratio = self.calc_open_amount(pd.DataFrame({'name': [down_put.name, up_call.name],
+                                        'alloc_ratio': [-1/2, -1/2],
+                                        'price': [down_put.mark_price, up_call.mark_price]}))
+            options[down_put.name] = down_put
+            options[up_call.name] = up_call
+            trade_till_good(current_time, self.position, alloc_ratio, options, self.trading_logger)
         else:
             logger.warning(f'{current_time} miss data, down_put is {down_put}, up_call is {up_call}, skipped')
 
@@ -200,14 +315,14 @@ class BackTrader:
 
         mature_date = self.get_mature_date(time_options, current_time, self.strategy_params['mature_gear'])
         time_options = time_options[time_options['expiry_date'] == mature_date]
-        btc_price = time_options['btc_price'].values[0]
+        btc_price = time_options[f'{self.target}_price'].values[0]
         exe_prices = sorted(time_options['exe_price'].astype('float').unique())
         down_exe_price, up_exe_price = self.get_exe_price(btc_price, exe_prices, self.strategy_params['exe_price_gear'])
         down_put = self.extract_option(time_options, down_exe_price, 'P', 'buy', self.portfolio_num)
         up_call = self.extract_option(time_options, up_exe_price, 'C', 'buy', self.portfolio_num)
         if down_put and up_call:
-            self.current_position = Position(current_time, [down_put, up_call])
-            position_pnl = - self.buy(down_put, self.portfolio_num)*down_put.btc_price - self.buy(up_call, self.portfolio_num)*up_call.btc_price
+            self.position = Position(current_time, [down_put, up_call])
+            position_pnl = - buy(down_put, self.portfolio_num) * down_put.target_price - buy(up_call, self.portfolio_num) * up_call.target_price
             self.after_open_position(current_time, position_pnl, btc_price)
         else:
             logger.warning(f'{current_time} miss data, down_put is {down_put}, up_call is {up_call}, skipped')
@@ -217,7 +332,7 @@ class BackTrader:
     def open_buy_calender_position(self, current_time: pd.Timestamp, time_options: pd.DataFrame):
         # 空仓 -》 持仓
         # 开近月平值双卖 开远月平值双买
-        btc_price = time_options['btc_price'].values[0]
+        btc_price = time_options[f'{self.target}_price'].values[0]
 
         mature_date1 = self.get_mature_date(time_options, current_time, self.strategy_params['mature_gear1'])
         time_options1 = time_options[time_options['expiry_date'] == mature_date1]
@@ -233,8 +348,8 @@ class BackTrader:
         down_put2 = self.extract_option(time_options2, down_exe_price2, 'P', 'buy', self.portfolio_num)
         up_call2 = self.extract_option(time_options2, up_exe_price2, 'C', 'buy', self.portfolio_num)
         if down_put1 and up_call1 and down_put1 and up_call1:
-            self.current_position = Position(current_time, [down_put1, up_call1, down_put2, up_call2])
-            position_pnl =  self.sell(down_put1, self.portfolio_num)*down_put1.btc_price + self.sell(up_call1, self.portfolio_num)*up_call1.btc_price  - self.buy(down_put2, self.portfolio_num)*down_put2.btc_price - self.buy(up_call2, self.portfolio_num)*up_call2.btc_price
+            self.position = Position(current_time, [down_put1, up_call1, down_put2, up_call2])
+            position_pnl = self.sell(down_put1, self.portfolio_num) * down_put1.target_price + self.sell(up_call1, self.portfolio_num) * up_call1.target_price - self.buy(down_put2, self.portfolio_num) * down_put2.target_price - self.buy(up_call2, self.portfolio_num) * up_call2.target_price
             self.after_open_position(current_time, position_pnl, btc_price)
         else:
             logger.warning(f'{current_time} miss data, options are {[down_put1, up_call1, down_put2, up_call2]}')
@@ -243,7 +358,7 @@ class BackTrader:
     def open_time_straddle_position(self, current_time: pd.Timestamp, time_options: pd.DataFrame):
         # 空仓 -》 持仓
         # 开近月平值双卖 开远月平值双买
-        btc_price = time_options['btc_price'].values[0]
+        btc_price = time_options[f'{self.target}_price'].values[0]
 
         mature_date1 = self.get_mature_date(time_options, current_time, self.strategy_params['mature_gear1'])
         time_options1 = time_options[time_options['expiry_date'] == mature_date1]
@@ -259,8 +374,8 @@ class BackTrader:
         down_put2 = self.extract_option(time_options2, down_exe_price2, 'P', 'buy', self.portfolio_num)
         up_call2 = self.extract_option(time_options2, up_exe_price2, 'C', 'buy', self.portfolio_num)
         if down_put1 and up_call1 and down_put1 and up_call1:
-            self.current_position = Position(current_time, [down_put1, up_call1, down_put2, up_call2])
-            position_pnl =  self.sell(down_put1, self.portfolio_num)*down_put1.btc_price + self.sell(up_call1, self.portfolio_num)*up_call1.btc_price  - self.buy(down_put2, self.portfolio_num)*down_put2.btc_price - self.buy(up_call2, self.portfolio_num)*up_call2.btc_price
+            self.position = Position(current_time, [down_put1, up_call1, down_put2, up_call2])
+            position_pnl = self.sell(down_put1, self.portfolio_num) * down_put1.target_price + self.sell(up_call1, self.portfolio_num) * up_call1.target_price - self.buy(down_put2, self.portfolio_num) * down_put2.target_price - self.buy(up_call2, self.portfolio_num) * up_call2.target_price
             self.after_open_position(current_time, position_pnl, btc_price)
         else:
             logger.warning(f'{current_time} miss data, options are {[down_put1, up_call1, down_put2, up_call2]}')
@@ -305,12 +420,11 @@ class BackTrader:
                 'expiry_date': option_row['expiry_date'].values[0],
                 'exe_price': float(option_row['exe_price'].values[0]),
                 'type': option_row['type'].values[0],
-                'btc_price': option_row['btc_price'].values[0],
+                'target_price': option_row[f'{self.target}_price'].values[0],
             }
             return Option(snapshot_time=config['snapshot_time'], name=config['name'], mark_price=config['mark_price'],
                           bid_price=config['bid_price'], ask_price=config['ask_price'], exe_price=config['exe_price'],
-                          expiry_date=config['expiry_date'], type=config['type'], btc_price=config['btc_price'],
-                          side=side, number = num)
+                          expiry_date=config['expiry_date'], option_type=config['type'], target_price=config['target_price'])
         except Exception as e:
             return None
             print(e)
@@ -347,16 +461,32 @@ class BackTrader:
             self.open_time_straddle_position(time_stamp, time_data)
         else:
             logger.error(f'strategy did not realize.')
+
+
+    def update_records(self, current_time: pd.Timestamp, time_data: pd.DataFrame):
+        if self.position.records:
+            for record in self.position.records:
+                record.current_time = current_time
+                option_row = time_data[time_data['instrument_name'] == record.item.name]
+                record.item.snapshot_time = current_time
+                record.item.target_price = float(option_row[f'{self.target}_price'].iloc[0])
+                record.item.ask_price = float(option_row['ask_price'].iloc[0]) if record.item.quote == 'um' else float(option_row['ask_price'].iloc[0])*record.item.target_price
+                record.item.bid_price = float(option_row['bid_price'].iloc[0]) if record.item.quote == 'um' else float(option_row['bid_price'].iloc[0])*record.item.target_price
+                record.item.mark_price = float(option_row['mark_price'].iloc[0]) if record.item.quote == 'um' else float(option_row['mark_price'].iloc[0])*record.item.target_price
+                record.mark_volume = record.amount*record.item.mark_price
+                record.unpnl = record.mark_volume - record.cost_volume
     def trade(self):
         for time_stamp in self.time_stamps:
+
             current_time = pd.to_datetime(time_stamp)
             time_data = self.data[self.data['snapshot_time'] == current_time]
+            self.update_records(time_stamp, time_data)
             if not self.empty_position():
-                dynamic_hedger = DynamicHedger(self.current_position, time_stamp, time_data)
-                if self.dynamic_hedger.hedge_condition:
-                    self.dynamic_hedger.hedge()
-
-                if self.arraive_time(time_stamp):
+                dynamic_hedger = DynamicHedger(time_stamp, time_data, self.trading_logger)
+                if dynamic_hedger.at_time(time_stamp, 16):
+                    now_target_price = self.target_data.loc[current_time, f'{self.target}_price']
+                    self.position = dynamic_hedger.keep_sum_hedge(current_time, self.position, time_data, now_target_price, UNRISK_RATE)
+                if self.arrive_time(time_stamp):
                     # close position
                     self.close_position(time_stamp)
                     # open new position
@@ -368,7 +498,7 @@ class BackTrader:
 
 
     def empty_position(self):
-        if (self.current_position == None) or  (self.current_position.options == None):
+        if (self.position == None) or  (self.position.records == None):
             return True
         else:
             return False
@@ -376,24 +506,24 @@ class BackTrader:
 
     def analyze_trade(self):
         # 计算总收益
-        total_profit = self.current_capital - self.initial_capital
-        total_return = (self.current_capital / self.initial_capital - 1)
+        total_profit = self.position.current_capital - self.position.initial_capital
+        total_return = (self.position.current_capital / self.position.initial_capital - 1)
 
-        print(f"初始资金: {self.initial_capital}")
-        print(f"最终资金: {self.current_capital}")
+        print(f"初始资金: {self.position.initial_capital}")
+        print(f"最终资金: {self.position.current_capital}")
         print(f"总收益: {total_profit}")
         print(f"总收益率: {total_return * 100:.2f}%")
         # 获取时长
         print(f"APR: {100*(1 + total_return * (24 * 365 / len(self.time_stamps)) - 1):.2f}%")
         print(f"APY: {100*((1 + total_return) ** (24 * 365 / len(self.time_stamps)) - 1):.2f}%")
-        trade_profits = pd.DataFrame(self.trade_profits)
-        trade_positions = pd.DataFrame(self.trade_positions)
+        trade_profits = pd.DataFrame(self.trading_logger.trade_profits)
+        trade_positions = pd.DataFrame(self.trading_logger.trade_positions)
 
         self.trade_trails = pd.merge(trade_profits, trade_positions, on='current_time',how='outer')
         self.trade_trails.sort_values(by='current_time', inplace=True)
-        self.trade_trails['return_per_time'] = self.trade_trails['pnl']/self.initial_capital
-        self.trade_trails['curve'] = (self.trade_trails['pnl'].expanding().sum() + self.initial_capital)/self.initial_capital
-        self.trade_trails['current_capital'] = self.trade_trails['pnl'].expanding().sum() + self.initial_capital
+        self.trade_trails['return_per_time'] = self.trade_trails['pnl']/self.position.initial_capital
+        self.trade_trails['curve'] = (self.trade_trails['pnl'].expanding().sum() + self.position.initial_capital)/self.position.initial_capital
+        self.trade_trails['current_capital'] = self.trade_trails['pnl'].expanding().sum() + self.position.initial_capital
 
 
         self.trade_trails['max2here'] = self.trade_trails['curve'].expanding().max()
@@ -412,16 +542,16 @@ class BackTrader:
         print(f'max_draw_down: {max_draw_down:.2f}')
         print(f'最大回撤开始时间:{start_date}')
         print(f'最大回撤结束时间:{end_date}')
-        avg_profit_per_trade = trade_profits['pnl'].sum() / self.num_trades if self.num_trades > 0 else 0
+        avg_profit_per_trade = trade_profits['pnl'].sum() / self.trading_logger.num_trades if self.trading_logger.num_trades > 0 else 0
         max_profit = max(trade_profits['pnl'])
         min_profit = min(trade_profits['pnl'])
 
-        print(f"交易次数: {self.num_trades}")
+        print(f"交易次数: {self.trading_logger.num_trades}")
         print(f"平均每笔交易收益: {avg_profit_per_trade:.2f}")
         print(f"最大单笔收益: {max_profit:.2f}")
         print(f"最小单笔收益: {min_profit:.2f}")
         print(f"daily turnover: {daily_turnover:.2f}")
-        self.target_data['btc_volatility'] = self.target_data['btc_price'].pct_change(1).rolling(15*24).std()
+        self.target_data['target_volatility'] = self.target_data[f'{self.target}_price'].pct_change(1).rolling(15*24).std()
         self.trade_trails = pd.merge(self.trade_trails, self.target_data, left_on='current_time', right_on='snapshot_time', how='left')
         self.trade_trails.to_csv(f'{self.save_dir}/trade_trails.csv', index=False)
 
@@ -439,8 +569,8 @@ class BackTrader:
         fig.add_trace(go.Scatter(x=self.trade_trails['current_time'], y=self.trade_trails['curve'],
                                  mode='lines+markers', name='累积净值'), row=1, col=1)
         # 添加累积净值折线图
-        fig.add_trace(go.Scatter(x=self.trade_trails['current_time'], y=self.trade_trails['btc_price']/self.trade_trails['btc_price'].loc[0],
-                                 mode='lines+markers', name='btc_price'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=self.trade_trails['current_time'], y=self.trade_trails[f'{self.target}_price']/self.trade_trails[f'{self.target}_price'].loc[0],
+                                 mode='lines+markers', name='target_price'), row=1, col=1)
         fig.add_trace(go.Scatter(x=self.trade_trails['current_time'], y=self.trade_trails['btc_volatility'],
                                  mode='lines+markers', name='btc_volatility'), row=3, col=1)
         fig.add_trace(
@@ -465,7 +595,7 @@ class BackTrader:
             header=dict(values=["初始资金", "最终资金", "总收益", "总收益率(%)", "APR(%)", "APY(%)", "annual sharpe", "最大回撤(%)", "最大回撤开始时间", "最大回撤结束时间"]),
             cells=dict(values=[
     
-                round(self.initial_capital, 2), round(self.current_capital, 2), round(total_profit, 2), round(total_return * 100, 2),
+                round(self.position.initial_capital, 2), round(self.position.current_capital, 2), round(total_profit, 2), round(total_return * 100, 2),
                 round(100 * (1 + total_return * (24 * 365 / len(self.time_stamps)) - 1), 2), 
                 round(100 * ((1 + total_return) ** (24 * 365 / len(self.time_stamps)) - 1), 2), 
                 round(sharpe_ratio * sqrt(365), 2), round(max_draw_down*100, 2), start_date, end_date
@@ -492,7 +622,7 @@ class BackTrader:
 
     def analyze_btc(self):
 
-        self.target_data['btc_volatility'] = self.target_data['btc_price'].pct_change(1).rolling(15*24).std()
+        self.target_data['btc_volatility'] = self.target_data[f'{self.target}_price'].pct_change(1).rolling(15*24).std()
 
 
         # 创建收益曲线图
@@ -503,8 +633,8 @@ class BackTrader:
             ],
         )
 
-        fig.add_trace(go.Scatter(x=self.target_data['current_time'], y=self.target_data['btc_price']/self.target_data['btc_price'].loc[0],
-                                 mode='lines+markers', name='btc_price'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=self.target_data['current_time'], y=self.target_data[f'{self.target}_price']/self.target_data[f'{self.target}_price'].loc[0],
+                                 mode='lines+markers', name='target_price'), row=1, col=1)
         fig.add_trace(go.Scatter(x=self.target_data['current_time'], y=self.target_data['btc_volatility'],
                                  mode='lines+markers', name='btc_volatility'),secondary_y=True, row=1, col=1)
 
@@ -536,7 +666,7 @@ class BoxSpreadBackTrader:
         self.time_spread = time_spread
         self.num_trades = 0
 
-    def arraive_time(self, current_time: pd.Timestamp):
+    def arrive_time(self, current_time: pd.Timestamp):
         # 如果当前时间大于持仓的到期时间，平仓
         if 'mature_time' not in self.current_position.keys():
             return True
@@ -693,7 +823,7 @@ class BoxSpreadBackTrader:
             self.rebalance_box_spread_position(row)
             # logger.info(f"开仓: {self.current_position}")
         else:
-            if self.arraive_time(row['snapshot_time']):
+            if self.arrive_time(row['snapshot_time']):
                 # 平仓
                 self.rebalance_box_spread_position(row)
                 # logger.info(f"平掉到期仓位后开仓: {self.current_position}")
@@ -771,36 +901,107 @@ class BoxSpreadBackTrader:
 
 
 class DynamicHedger:
-    def __init__(self, position, time_stamp, time_data):
-        self.position = position
+    def __init__(self, time_stamp, time_data, trading_logger: TradingLogger, target: str = 'btc'):
+
         self.time_stamp     =      time_stamp
         self.time_data =           time_data
+        self.trading_logger =           trading_logger
+        self.target = target
 
-    def at_time(self, time_stamp):
-        return time_stamp == self.time_stamp
+    def at_time(self, current_time: pd.Timestamp, hour=16):
+        """
+        在特定时间进行对冲
+        :param current_time: 当前时间
+        :param hour: 对冲时间，如hour=13，则在每天13点进行对冲
+        :return:
+        """
+        return current_time.hour == hour
 
-    def at_delta(self, threshold: float):
-        delta = 
-        return delta >= threshold  # 当delta达到设定的阈值时，返回true
+    def at_delta(self, current_time: pd.Timestamp, current_position: Position, target_price: float, unrisk_rate: float, threshold: float= 0.1):
+        with timer():
+            delta,_,_,_ = current_position.update_greeks(target_price, unrisk_rate, current_time)
+        return abs(delta) >= threshold  # 当delta达到设定的阈值时，返回true
     
-    def keep_sum_hedge(self):
-        total_value = self.position.exe_price * self.position.number  # 当前仓位总价值
-        delta = self.calculate_delta()  # 计算当前delta
+    def keep_sum_hedge(self, current_time: pd.Timestamp, current_position: Position, time_data: pd.DataFrame, target_price: float, unrisk_rate: float, threshold: float = 0.1):
+        if self.at_delta(current_time, current_position, target_price, unrisk_rate, threshold):
+            delta_abs_sum = 0
+            total_capital = current_position.mark_volume  # 当前持仓的总价值
+            options = {}
 
-        if delta != 0:
-            # 计算每单位仓位的delta变化
-            delta_per_unit = self.calculate_delta_per_unit()
-            if delta_per_unit != 0:
-                # 调整仓位数量以使总delta为0
-                adjustment = -delta / delta_per_unit  # 计算需要调整的数量
-                self.position.number += adjustment  # 更新仓位数量
 
-                # 确保仓位总价值不变
-                if self.position.number > 0:
-                    self.position.exe_price = total_value / self.position.number
-                else:
-                    self.position.exe_price = 0  # 如果仓位数量为0，设置执行价格为0
 
-    def calculate_delta_per_unit(self):
-        # 假设每个期权的delta是一个已知的属性
-        return self.position.delta  # 返回每单位仓位的delta变化
+            for record in current_position.records:
+                delta_abs_sum += abs(record.item.delta)
+                options[record.item.name] = record.item
+            alloc_ratio = pd.DataFrame({'name': [record.item.name for record in current_position.records],
+                                        'alloc_ratio': [abs(record.item.delta) / delta_abs_sum - 1 for record in current_position.records],
+                                        'price': [record.item.mark_price for record in current_position.records]})
+            alloc_ratio['amount'] = round(total_capital * alloc_ratio['alloc_ratio'] / alloc_ratio['price'],
+                MIN_PRECISION[self.target])
+            return trade_till_good(current_time, current_position, alloc_ratio, options, self.trading_logger)
+
+
+
+def trade_till_good(current_time: pd.Timestamp, current_position: Position, alloc_ratio: pd.DataFrame, options: dict, trading_logger: TradingLogger):
+    """
+    将当前仓位交易至目标仓位
+
+    :param current_time:
+    :param current_position:
+    :param alloc_ratio:
+    :param options:
+    :param trading_logger:
+    :return:
+    """
+    if not pd.DataFrame(current_position.records).empty:
+        records_df = pd.DataFrame({
+            'name': [record.item.name for record in current_position.records],
+            'cost_price': [record.cost_price for record in current_position.records],
+            'bid_price': [record.item.bid_price for record in current_position.records],
+            'ask_price': [record.item.ask_price for record in current_position.records],
+            'mark_price': [record.item.mark_price for record in current_position.records],
+            'amount': [record.amount for record in current_position.records]
+        })
+    else:
+        records_df = pd.DataFrame({
+            'name': alloc_ratio['name'],
+            'cost_price': [0]*len(alloc_ratio['name']),
+            'bid_price': [0]*len(alloc_ratio['name']),
+            'ask_price': [0]*len(alloc_ratio['name']),
+            'mark_price': [0]*len(alloc_ratio['name']),
+            'amount': [0]*len(alloc_ratio['name'])})
+
+    trades = pd.merge(records_df, alloc_ratio, how='outer', suffixes=('_now','_target'), on='name')
+    trades['amount_trade'] = trades['amount_target'] - trades['amount_now']
+    position_pnl = 0
+    records = []
+    for i, row in trades.iterrows():
+        option = options[row['name']]
+        bors = 'buy' if row['amount_trade'] > 0 else 'sell'
+        cash_flow, bargained_price = make_order(option, abs(row['amount_trade']), side=bors)
+        position_pnl += cash_flow
+        records.append(Record(option, row['amount_target'], bargained_price, 'buy' if row['amount_target'] > 0 else 'sell'))
+        trading_logger.num_trades += 1
+
+    new_position = current_position
+    new_position.current_time = current_time
+    new_position.current_capital += position_pnl
+    new_position.records = records
+
+    logger.info(f'position opened:{current_time}')
+    trading_logger.trade_profits.append({'current_time': current_time, 'pnl': position_pnl})
+    trading_logger.num_rounds += 1
+    trading_logger.trade_positions.append(get_position(new_position))
+    logger.info(f'option pnl: {position_pnl} current_capital: {new_position}')
+    new_position.update()
+    return new_position
+
+
+
+def get_position(position : Position, alter_time=None):
+    position_dict = vars(position)
+    infos = position_dict.copy()
+    infos['items'] = [_.item.name for _ in infos['records']]
+    if alter_time:
+        infos['current_time'] = alter_time
+    return infos

@@ -206,24 +206,24 @@ def show_protfolio_list(title, S, options, r, iv, future_price=0, future_weight=
 
 
 
-# show_protfolio('双买', S, 64000, 0.0625*btc_price, 'put', 'buy', 64000, 0.0539*btc_price, 'call', 'buy', r, iv, time2mature)
-# show_protfolio('双卖', S, 64000, 0.0625*btc_price, 'put', 'sell', 64000, 0.0539*btc_price, 'call', 'sell', r, iv, time2mature)
+# show_protfolio('双买', S, 64000, 0.0625*target_price, 'put', 'buy', 64000, 0.0539*target_price, 'call', 'buy', r, iv, time2mature)
+# show_protfolio('双卖', S, 64000, 0.0625*target_price, 'put', 'sell', 64000, 0.0539*target_price, 'call', 'sell', r, iv, time2mature)
 # show_protfolio('牛市认购价差', S,
-#                [[62000, 0.0699 * btc_price, 'call', 'buy'], [64000, 0.0544 * btc_price, 'call', 'sell']], r, iv,
+#                [[62000, 0.0699 * target_price, 'call', 'buy'], [64000, 0.0544 * target_price, 'call', 'sell']], r, iv,
 #                time2mature)
 # show_protfolio('牛市认沽价差', S,
-#                [[62000, 0.0464 * btc_price, 'put', 'buy'], [64000, 0.0625 * btc_price, 'put', 'sell']], r, iv,
+#                [[62000, 0.0464 * target_price, 'put', 'buy'], [64000, 0.0625 * target_price, 'put', 'sell']], r, iv,
 #                time2mature)
 # show_protfolio('熊市认购价差', S,
-#                [[62000, 0.0699 * btc_price, 'call', 'sell'], [64000, 0.0544 * btc_price, 'call', 'buy']], r, iv,
+#                [[62000, 0.0699 * target_price, 'call', 'sell'], [64000, 0.0544 * target_price, 'call', 'buy']], r, iv,
 #                time2mature)
 # show_protfolio('熊市认沽价差', S,
-#                [[62000, 0.0452 * btc_price, 'put', 'buy'], [58000, 0.0226 * btc_price, 'put', 'sell']], r, iv,
+#                [[62000, 0.0452 * target_price, 'put', 'buy'], [58000, 0.0226 * target_price, 'put', 'sell']], r, iv,
 #                time2mature)
 # show_protfolio('领口价差', S, 66000, 2800, 'put', 'buy', 73000, 1800, 'call', 'sell', r, iv, time2mature, future_price=67000, option1_weight=1, option2_weight=1, future_weight=0)
 # show_protfolio('领口价差', S, 66000, 2800, 'put', 'buy', 73000, 1800, 'call', 'sell', r, iv, time2mature, future_price=67000, option1_weight=1, option2_weight=1, future_weight=1)
 
-# show_protfolio('call_put_parity', S, 64000, 0.0625*btc_price, 'put', 'buy', 64000, 0.0539*btc_price, 'call', 'sell', r, iv, time2mature, future_price=btc_price, option1_weight=1, option2_weight=1, future_weight=1)
+# show_protfolio('call_put_parity', S, 64000, 0.0625*target_price, 'put', 'buy', 64000, 0.0539*target_price, 'call', 'sell', r, iv, time2mature, future_price=target_price, option1_weight=1, option2_weight=1, future_weight=1)
 
 if __name__ == '__main__':
     btc_price = 64000

@@ -14,7 +14,7 @@ from config import BACKTEST_DIR
 
 btc_data = pd.read_feather(os.path.join(BACKTEST_DIR ,'BTC-USDT.pkl'))
 btc_data = btc_data[['candle_begin_time', 'open']]
-btc_data.rename(columns={'open': 'btc_price'}, inplace=True)
+btc_data.rename(columns={'open': 'target_price'}, inplace=True)
 # 目前已处理好的回测数据
 data = pd.read_pickle(os.path.join(BACKTEST_DIR, 'btc_option_data_for_trade1118.pkl'))
 data = data[['snapshot_time', 'expiry_date', 'exe_price', 'instrument_name', 'mark_price', 'bid_price', 'ask_price', 'type']]

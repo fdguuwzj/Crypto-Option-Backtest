@@ -43,7 +43,7 @@ def buy(item, fraction = 0.001):
 #
 def process_time_group(time, time_data):
     min_mature = time_data['mature_time'].min()
-    btc_price = time_data.loc[time_data['mature_time'] == min_mature, 'btc_price'].mean()
+    btc_price = time_data.loc[time_data['mature_time'] == min_mature, 'target_price'].mean()
     # 只在min_mature时遍历组合
     mature_data = time_data[time_data['mature_time'] == min_mature]
     long_box_max_pnl = float('-inf')
@@ -124,7 +124,7 @@ def process_time_group(time, time_data):
             'short_box_L_call_option_name': short_box_best_L_option[0]['instrument_name'],
             'short_box_L_put_option_name': short_box_best_L_option[1]['instrument_name'],
             'short_box_mature': short_box_best_mature,
-            'btc_price': btc_price
+            'target_price': btc_price
         }, index=[0])
     return None
 
@@ -147,11 +147,11 @@ if __name__ == '__main__':
     # # # data = pd.read_pickle('data/btc_option_data_for_trade.pkl')
     # data['snapshot_time'] = data['snapshot_time'].dt.floor('T')
     # # # # 创建一个空的DataFrame来存储结果
-    # btc_price = pd.read_feather('data/BTC-USDT.pkl')
-    # btc_price['candle_begin_time'] = pd.to_datetime(btc_price['candle_begin_time'])
-    # btc_price.rename(columns={"candle_begin_time": 'snapshot_time'}, inplace=True)
-    # btc_price['btc_price'] = btc_price['open']
-    # data = pd.merge(data, btc_price[['snapshot_time', 'btc_price']], on ='snapshot_time')
+    # target_price = pd.read_feather('data/BTC-USDT.pkl')
+    # target_price['candle_begin_time'] = pd.to_datetime(target_price['candle_begin_time'])
+    # target_price.rename(columns={"candle_begin_time": 'snapshot_time'}, inplace=True)
+    # target_price['target_price'] = target_price['open']
+    # data = pd.merge(data, target_price[['snapshot_time', 'target_price']], on ='snapshot_time')
     # data.to_pickle('data/btc_option_data_for_trade.pkl')
     data = pd.read_pickle('data/btc_option_data_for_trade.pkl')
     # # if is_debug:

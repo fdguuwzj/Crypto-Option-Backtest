@@ -11,8 +11,10 @@ import traceback
 import requests
 from loguru import logger
 from urllib3.exceptions import ReadTimeoutError
+import contextlib
+import time
 
-
+import time
 def retry_wrapper(
         func, params=None, func_name='', retry_times=5, sleep_seconds=1, if_exit=True
 ):
@@ -89,3 +91,35 @@ def get_binance_usdt_futures_tickers():
     ]
 
     return usdt_futures_tickers
+
+
+def time_it(func):
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        end_time = time.time()
+        logger.info(f"函数 '{func.__name__}' 执行时间: {end_time - start_time:.4f}秒")
+        return result
+    return wrapper
+
+
+
+@contextlib.contextmanager
+def timer(msg=None, log_func=print):
+    begin_time = time.perf_counter()
+    yield
+    time_elapsed = time.perf_counter() - begin_time
+    log_func(f"{msg or 'timer'} | {time_elapsed:.2f} sec elapsed ")
+
+if __name__ == '__main__':
+
+
+    @time_it
+    def example_function(x, y):
+        time.sleep(1)  # 模拟耗时操作
+        return x + y
+
+
+    # 使用示例
+    result = example_function(5, 10)
+    print(f"结果: {result}")
