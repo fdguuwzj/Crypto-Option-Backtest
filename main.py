@@ -28,7 +28,8 @@ if __name__ == '__main__':
     # backtrader = BackTrader(initial_capital=5000, strategy_params={'name': 'time_straddle','exe_price_gear1': 4, 'mature_gear1': 0 ,'exe_price_gear2': 1, 'mature_gear2': 3} ,data=data, date_interval=['2024-01-23 00:00:00', '2024-11-18 00:00:00'], fraction=0.001, portfolio_num=0.1)
     # backtrader = BackTrader(initial_capital=5000, strategy_params={'name': 'sell_straddle','exe_price_gear': 6, 'mature_gear': 0} ,data=data, date_interval=['2020-01-01 00:00:00', '2024-11-18 00:00:00'], fraction=0.001, portfolio_num=0.1)
     trading_logger = TradingLogger()
-    backtrader = BackTrader(initial_capital=5000, strategy_params={'name': 'sell_straddle','exe_price_gear': 1, 'mature_gear': 0} ,data=data, date_interval=['2024-11-01 00:00:00', '2024-11-18 00:00:00'], fraction=0.001, open_type='volume_ratio', open_value=0.01, trading_logger=trading_logger)
+    backtrader = BackTrader(initial_capital=50000, strategy_params={'name': 'sell_straddle','exe_price_gear':6, 'mature_gear': 0} ,data=data, date_interval=['2024-08-01 00:00:00', '2024-11-18 00:00:00'], fraction=0.01, open_type='volume_ratio_abs', open_value=0.01, trading_logger=trading_logger)
+    # backtrader.trade_with_ddh()
     backtrader.trade()
     backtrader.analyze_trade()
 

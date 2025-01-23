@@ -140,7 +140,7 @@ def iv_option(S, K, T, r, p, q=0, option_type='call'):
         p_est = vanilla_option(S, K, T, r, sigma, q, option_type)
         # 根据价格判断波动率是被低估还是高估，并对波动率做修正
         count += 1
-        if count > 10000:  # 时间价值为0的期权是算不出隐含波动率的，因此迭代到一定次数就不再迭代了
+        if count > 1000:  # 时间价值为0的期权是算不出隐含波动率的，因此迭代到一定次数就不再迭代了
             # sigma = 0
             break
 
