@@ -268,7 +268,6 @@ class BackTrader:
 
     def close_position(self, current_time: pd.Timestamp):
         # 持仓 -》 空仓
-
         now_btc_price = self.target_data.loc[current_time, f'{self.target}_price']
         # 只考虑到期行权情况
         position_pnl = 0
@@ -512,7 +511,7 @@ class BackTrader:
             logger.error(f'strategy did not realize.')
 
     def update_records(self, current_time: pd.Timestamp, time_data: pd.DataFrame):
-        if self.position.records:
+        if self.position and self.position.records:
             for record in self.position.records:
                 record.current_time = current_time
                 option_row = time_data[time_data['instrument_name'] == record.item.name]
@@ -532,20 +531,23 @@ class BackTrader:
     def trade_with_ddh(self):
         for time_stamp in self.time_stamps:
             current_time = pd.to_datetime(time_stamp)
+            if current_time == pd.Timestamp('2024-11-14 08:00:00'):
+                print(1)
             time_data = self.data[self.data['snapshot_time'] == current_time]
             self.update_records(time_stamp, time_data)
             if not self.empty_position():
-                dynamic_hedger = DynamicHedger(time_stamp, time_data, self.trading_logger)
-                if dynamic_hedger.at_time(time_stamp, 8):
-                    now_target_price = self.target_data.loc[current_time, f'{self.target}_price']
-                    self.position = dynamic_hedger.keep_sum_hedge(current_time, self.position, time_data,
-                                                                  now_target_price, UNRISK_RATE)
+
                 if self.arrive_time(time_stamp):
                     # close position
                     self.close_position(time_stamp)
                     # open new position
                     self.open_position(time_stamp, time_data)
-
+                else:
+                    dynamic_hedger = DynamicHedger(time_stamp, time_data, self.trading_logger)
+                    if dynamic_hedger.at_time(time_stamp, 8):
+                        now_target_price = self.target_data.loc[current_time, f'{self.target}_price']
+                        self.position = dynamic_hedger.keep_sum_hedge(current_time, self.position, time_data,
+                                                                      now_target_price, UNRISK_RATE)
             else:
                 # open new position
                 self.open_position(time_stamp, time_data)
@@ -555,8 +557,8 @@ class BackTrader:
         for time_stamp in self.time_stamps:
 
             current_time = pd.to_datetime(time_stamp)
-            if current_time == pd.Timestamp('2024-08-06 08:00:00'):
-                print(1)
+            # if current_time == pd.Timestamp('2024-08-06 08:00:00'):
+            #     print(1)
             time_data = self.data[self.data['snapshot_time'] == current_time]
             self.update_records(time_stamp, time_data)
             if not self.empty_position():
@@ -627,7 +629,7 @@ class BackTrader:
         print(f"平均每笔交易收益: {avg_profit_per_trade:.2f}")
         print(f"最大单笔收益: {max_profit:.2f}")
         print(f"最小单笔收益: {min_profit:.2f}")
-        print(f"daily turnover: {daily_turnover:.2f}")
+        print(f"daily turnover: {daily_turnover:.5f}")
         self.target_data[f'{self.target}_volatility'] = self.target_data[f'{self.target}_price'].pct_change(1).rolling(
             15 * 24).std()
         self.trade_trails = pd.merge(self.trade_trails, self.target_data, left_on='current_time',
@@ -1026,6 +1028,8 @@ class DynamicHedger:
             alloc_ratio['amount'] = round(total_capital * alloc_ratio['alloc_ratio'] / alloc_ratio['price'],
                                           MIN_PRECISION[self.target])
             return trade_till_good(current_time, current_position, alloc_ratio, options, self.trading_logger)
+        else:
+            return current_position
 
     def use_target_hedge(self, current_time: pd.Timestamp, current_position: Position, time_data: pd.DataFrame,
                        target_price: float, unrisk_rate: float, threshold: float = 0.1):
