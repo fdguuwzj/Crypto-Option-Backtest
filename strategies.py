@@ -113,13 +113,13 @@ class Record:
                  side: str = 'buy'):
         self.current_time = item.snapshot_time
         self.item = item
-
         self.amount: float = amount  # 持仓数量，最小为0.1张
         self.side = side  # 'buy' or 'sell'
         self.cost_price = cost_price
         self.cost_volume = amount * cost_price
         self.mark_volume = amount * item.mark_price
         self.unpnl = 0  # unrealized pnl
+
 
 
 class Position:
@@ -153,8 +153,18 @@ class Position:
             [abs(record.mark_volume) for record in self.records if
              isinstance(record.item, LinearInstrument)]) if self.records else 0
 
+    def update_records(self, target_price: float, unrisk_rate: float, timestamp: pd.Timestamp):
+        if self.records:
+            for record in self.records:
+                # todo Q1 币本位还是u本位的问题
+                tmp = target_price * record.amount
+                if isinstance(record.item, Option):
+                    delta, gamma, vega, theta = record.update_mark_volume(target_price)
+                    self.delta += delta * tmp
+                    self.gamma += gamma * tmp
+                    self.vega += vega * tmp
+                    self.theta += theta
     def update_greeks(self, target_price: float, unrisk_rate: float, timestamp: pd.Timestamp):
-
         if self.records:
             for record in self.records:
                 # todo Q1 币本位还是u本位的问题
@@ -183,7 +193,7 @@ class TradingLogger(object):
         self.trade_positions = []
         # 创建一个列表来存储每次交易的收益
         self.trade_profits = []
-        self.equity = [] # 计算资产总权益
+        self.routine_positions = [] # 每个交易周期都记录一次position仓位信息
         self.num_trades = 0  # 交易次数
         self.num_rounds = 0  # 交易轮次，交易一组策略算一轮
 
@@ -548,8 +558,8 @@ class BackTrader:
                     record.item.mark_price = now_target_price
 
 
-    def routine_update_equity(self, current_time):
-        self.trading_logger.equity.append({'current_time': current_time, 'pnl': position_pnl})
+    def routine_update_position(self):
+        self.trading_logger.routine_positions.append(get_position(self.position))
     def trade_with_ddh(self, hedge_type=1):
         for time_stamp in self.time_stamps:
             current_time = pd.to_datetime(time_stamp)
@@ -559,7 +569,7 @@ class BackTrader:
                 print(1)
 
             self.update_records(time_stamp, time_data, now_target_price)
-            self.routine_update_equity(current_time)
+            self.routine_update_position()
             if not self.empty_position():
 
                 if self.arrive_time(time_stamp):
@@ -570,8 +580,6 @@ class BackTrader:
                 else:
                     dynamic_hedger = DynamicHedger(time_stamp, time_data, self.trading_logger)
                     if dynamic_hedger.at_time(time_stamp, 8):
-
-
                         self.position = dynamic_hedger.hedge(current_time, self.position, time_data,
                                                                       now_target_price, UNRISK_RATE, hedge_type=hedge_type)
             else:
@@ -1139,7 +1147,7 @@ def trade_till_good(current_time: pd.Timestamp, current_position: Position, allo
 
     new_position = current_position
     new_position.current_time = current_time
-    # new_position.current_capital += position_pnl
+    new_position.current_capital += position_pnl
     new_position.records = records
 
     logger.info(f'position opened:{current_time}')
