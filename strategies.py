@@ -243,12 +243,12 @@ class BackTrader:
             pass
         elif self.open_type == 'volume_ratio':
             alloc_ratio['amount'] = round(
-                self.position.current_capital * self.open_value * alloc_ratio['alloc_ratio'] / alloc_ratio['price'],
+                (self.position.current_capital + self.position.mark_volume) * self.open_value * alloc_ratio['alloc_ratio'] / alloc_ratio['price'],
                 MIN_PRECISION[self.target])
             return alloc_ratio
         elif self.open_type == 'volume_ratio_abs':
             alloc_ratio['amount'] = round(
-                self.position.current_capital * self.open_value * alloc_ratio['alloc_ratio'] / alloc_ratio['price'].sum(),
+                (self.position.current_capital + self.position.mark_volume) * self.open_value * alloc_ratio['alloc_ratio'] / alloc_ratio['price'].sum(),
                 MIN_PRECISION[self.target])
             return alloc_ratio
         elif self.open_type == 'volume_value':
@@ -586,13 +586,12 @@ class BackTrader:
 
     def trade(self):
         for time_stamp in self.time_stamps:
-
             current_time = pd.to_datetime(time_stamp)
             # if current_time == pd.Timestamp('2024-08-06 08:00:00'):
             #     print(1)
             now_target_price = self.target_data.loc[current_time, f'{self.target}_price']
             time_data = self.data[self.data['snapshot_time'] == current_time]
-            self.update_records(time_stamp, time_data, now_target_price)
+            self.routine_update_position(time_stamp, time_data, now_target_price)
             if not self.empty_position():
                 if self.arrive_time(time_stamp):
                     # close position
