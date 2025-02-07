@@ -7,7 +7,8 @@
 """
 import os
 import pandas as pd
-from config import BACKTEST_DIR
+from config import BACKTEST_DIR, BACKTEST_SYMBOL_DIR, SNAPSHOT_TIME, BID_PRICE, MARK_PRICE, ASK_PRICE, EXPIRATION, \
+    EXE_PRICE, TYPE, OPTION_NAME
 from strategies import BackTrader, TradingLogger
 from utils.options_utils import btc_vol_df
 from utils.utils import time_it, timer
@@ -20,7 +21,14 @@ if __name__ == '__main__':
     # 双卖回测
     with timer('read data'):
         # data = pd.read_pickle(os.path.join(BACKTEST_DIR, 'btc_option_data_for_trade_all_year.pkl'))
-        data = pd.read_pickle(os.path.join(BACKTEST_DIR, 'btc_option_data_for_trade1118.pkl'))
+        # data = pd.read_pickle(os.path.join(BACKTEST_DIR, 'btc_option_data_for_trade1118.pkl'))
+        data = pd.read_pickle(os.path.join(BACKTEST_SYMBOL_DIR, 'BTC_data_23_24_25.pkl'))
+        data = data.rename(columns={"hour": SNAPSHOT_TIME, 'expiration': EXPIRATION, 'strike_price':EXE_PRICE, 'type': TYPE,
+                                    'mark_price': MARK_PRICE, 'symbol': OPTION_NAME,
+                                    'BID_PRICE':BID_PRICE, 'ASK_PRICE':ASK_PRICE})
+
+
+        print(data.head(10).to_markdown())
     # 统计每天的数据条数
     # daily_counts = data.groupby(data['snapshot_time'].dt.date).size()
     # print('每日数据条数统计:')
@@ -28,10 +36,11 @@ if __name__ == '__main__':
     # backtrader = BackTrader(initial_capital=5000, strategy_params={'name': 'time_straddle','exe_price_gear1': 4, 'mature_gear1': 0 ,'exe_price_gear2': 1, 'mature_gear2': 3} ,data=data, date_interval=['2024-01-23 00:00:00', '2024-11-18 00:00:00'], fraction=0.001, portfolio_num=0.1)
     # backtrader = BackTrader(initial_capital=5000, strategy_params={'name': 'sell_straddle','exe_price_gear': 6, 'mature_gear': 0} ,data=data, date_interval=['2020-01-01 00:00:00', '2024-11-18 00:00:00'], fraction=0.001, portfolio_num=0.1)
     trading_logger = TradingLogger()
-    backtrader = BackTrader(initial_capital=50000, strategy_params={'name': 'sell_straddle','exe_price_gear':4, 'mature_gear': 3} ,data=data, date_interval=['2024-01-01 00:00:00', '2024-11-18 00:00:00'], fraction=0.01, open_type='volume_ratio_abs', open_value=0.01, trading_logger=trading_logger)
-    # backtrader.trade_with_ddh(hedge_type=2)
-    backtrader.trade()
-    backtrader.analyze_trade()
+    backtrader = BackTrader(initial_capital=50000, strategy_params={'name': 'sell_straddle','exe_price_gear':4, 'mature_gear': 1} ,data=data, date_interval=['2024-01-01 00:00:00', '2024-07-01 00:00:00'], fraction=0.01, open_type='volume_ratio_abs', open_value=0.01, trading_logger=trading_logger)
+    backtrader.trade_with_ddh(hedge_type=2)
+    # backtrader.trade_with_ddh_at_hour(hedge_type=2)
+    # backtrader.trade()
+    backtrader.analyze_trade2()
 
     # backtrader_buy_straddle = BackTrader(initial_capital=60000, strategy='buy_straddle' ,data=data, date_interval=['2024-01-23 00:00:00', '2024-11-05 00:00:00'], fraction=0.001, exe_price_gear=1, mature_gear=0)
     # backtrader_buy_straddle.trade()
