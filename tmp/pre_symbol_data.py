@@ -105,8 +105,7 @@ def process_symbol_data():
 
 
 if __name__ == '__main__':
-
-
+    # 处理并保存数据
     # process_symbol_data()
     for symbol in tqdm(['BTC', 'XRP', 'SOL', 'ETH'], desc="计算IV指数"):
         data = pd.read_pickle(os.path.join(BACKTEST_SYMBOL_DIR, f'{symbol}_data.pkl'))
@@ -128,82 +127,109 @@ if __name__ == '__main__':
 
         # 筛选周期权和双周期权
         data['days_to_expiry'] = (pd.to_datetime(data['expiration']) - data['hour']).dt.days
-        weekly_options = data[data['days_to_expiry'].between(3, 7, inclusive='right')]  # 周期权
-        biweekly_options = data[data['days_to_expiry'].between(7, 14, inclusive='right')]  # 双周期权
-
-        # 计算平值期权
-        weekly_atm = weekly_options.groupby('hour').apply(
+        call_options = data[data['type'] == 'call']
+        put_options = data[data['type'] == 'put']
+        call_monthly_atm = call_options.groupby('hour').apply(
             lambda x: x.iloc[(x['strike_price'] - x['underlying_price']).abs().argsort()[:2]]
         ).reset_index(drop=True)
-
-        biweekly_atm = biweekly_options.groupby('hour').apply(
-            lambda x: x.iloc[(x['strike_price'] - x['underlying_price']).abs().argsort()[:2]]
+        call_monthly_options = call_monthly_atm.groupby('hour').apply(
+            lambda x: x.iloc[(x['days_to_expiry'] - 30).abs().argsort()[:2]]
         ).reset_index(drop=True)
 
+        put_monthly_atm = put_options.groupby('hour').apply(
+            lambda x: x.iloc[(x['strike_price'] - x['underlying_price']).abs().argsort()[:2]]
+        ).reset_index(drop=True)
+        put_monthly_options = put_monthly_atm.groupby('hour').apply(
+            lambda x: x.iloc[(x['days_to_expiry'] - 30).abs().argsort()[:2]]
+        ).reset_index(drop=True)
 
+        print(call_monthly_atm)
+        # weekly_options = data[data['days_to_expiry'].between(3, 7, inclusive='right')]  # 周期权
+        # biweekly_options = data[data['days_to_expiry'].between(7, 14, inclusive='right')]  # 双周期权
+        # 
+        # # 计算平值期权
+        # weekly_atm = weekly_options.groupby('hour').apply(
+        #     lambda x: x.iloc[(x['strike_price'] - x['underlying_price']).abs().argsort()[:2]]
+        # ).reset_index(drop=True)
+        # 
+        # biweekly_atm = biweekly_options.groupby('hour').apply(
+        #     lambda x: x.iloc[(x['strike_price'] - x['underlying_price']).abs().argsort()[:2]]
+        # ).reset_index(drop=True)
+        # 
+        # 
+        # # 计算iv指数 - 使用mark_iv的加权平均
+        # def calc_iv_index(weekly, biweekly):
+        #     w1 = biweekly['days_to_expiry'].mean() / (
+        #                 biweekly['days_to_expiry'].mean() - weekly['days_to_expiry'].mean())
+        #     w2 = 1 - w1
+        #     return w1 * weekly['mark_iv'].mean() + w2 * biweekly['mark_iv'].mean()
+        #
         # 计算iv指数 - 使用mark_iv的加权平均
-        def calc_iv_index(weekly, biweekly):
-            w1 = biweekly['days_to_expiry'].mean() / (
-                        biweekly['days_to_expiry'].mean() - weekly['days_to_expiry'].mean())
-            w2 = 1 - w1
-            return w1 * weekly['mark_iv'].mean() + w2 * biweekly['mark_iv'].mean()
+        # def calc_iv_index(weekly):
+        #     w1 = biweekly['days_to_expiry'].mean() / (
+        #                 biweekly['days_to_expiry'].mean() - weekly['days_to_expiry'].mean())
+        #     w2 = 1 - w1
+        #     return w1 * weekly['mark_iv'].mean() + w2 * biweekly['mark_iv'].mean()
+        #
+        # 
+        iv_index = pd.concat([call_monthly_options, put_monthly_options])
+        mean_iv = pd.DataFrame(iv_index.groupby('hour')['mark_iv'].mean())
 
 
-        iv_index = pd.DataFrame()
-        iv_index['hour'] = sorted(set(weekly_atm['hour']).intersection(set(biweekly_atm['hour'])))
-        iv_index['iv'] = iv_index['hour'].apply(lambda h: calc_iv_index(
-            weekly_atm[weekly_atm['hour'] == h],
-            biweekly_atm[biweekly_atm['hour'] == h]
-        ))
-        iv_index.to_csv(f'{symbol}_iv_index.csv', index=False)
+        # iv_index['iv'] = iv_index['hour'].apply(lambda h: calc_iv_index(
+        #     weekly_atm[weekly_atm['hour'] == h],
+        #     biweekly_atm[biweekly_atm['hour'] == h]
+        # ))
+        mean_iv.to_csv(f'{symbol}_iv_index.csv', index=False)
         # 计算一年时间窗口的滚动历史分位数
         window_size = '365D'  # 一年的时间窗口
-        iv_index['iv_percentile_1year'] = iv_index.set_index('hour')['iv'].rolling(window_size, min_periods=1).apply(
+        mean_iv['iv_percentile_1year'] = mean_iv['mark_iv'].rolling(window_size, min_periods=1).apply(
             lambda x: pd.Series(x).rank(pct=True).iloc[-1]
-        ).reset_index()['iv']
+        ).reset_index()['mark_iv']
         # 计算历史分位数
-        iv_index['iv_percentile'] = iv_index['iv'].rank(pct=True)
+        mean_iv['iv_percentile'] = mean_iv['mark_iv'].rank(pct=True)
 
         # 创建子图
-        fig = make_subplots(rows=2, cols=1,
-                            subplot_titles=(f'{symbol} IV指数', f'{symbol} IV历史分位数'),
-                            shared_xaxes=True)  # 共享x轴
-
+        fig = make_subplots(rows=2, cols=1, 
+                          subplot_titles=(f'{symbol} IV指数', f'{symbol} IV历史分位数'),shared_xaxes=True)
+        
         # IV指数图
         fig.add_trace(
-            go.Scatter(x=pd.to_datetime(iv_index['hour']),
-                       y=iv_index['iv'],
-                       mode='lines',
-                       name='IV指数'),
+            go.Scatter(x=pd.to_datetime(mean_iv.index),
+                      y=mean_iv['mark_iv'],
+                      mode='lines',
+                      name='IV指数'),
             row=1, col=1
         )
-
+        
         # IV历史分位数图
         fig.add_trace(
-            go.Scatter(x=pd.to_datetime(iv_index['hour']),
-                       y=iv_index['iv_percentile'],
-                       mode='lines',
-                       name='IV历史分位数'),
+            go.Scatter(x=pd.to_datetime(mean_iv.index),
+                      y=mean_iv['iv_percentile'],
+                      mode='lines',
+                      name='IV历史分位数'),
             row=2, col=1
         )
         # IV历史分位数图
         fig.add_trace(
-            go.Scatter(x=pd.to_datetime(iv_index['hour']),
-                       y=iv_index['iv_percentile_1year'],
-                       mode='lines',
-                       name='IV历史分位数(1year)'),
+            go.Scatter(x=pd.to_datetime(mean_iv.index),
+                      y=mean_iv['iv_percentile_1year'],
+                      mode='lines',
+                      name='IV历史分位数(1year)'),
             row=2, col=1
         )
-
+        
         # 更新布局
         fig.update_layout(
             height=800,
             title_text=f"{symbol}期权IV指数分析",
-            showlegend=True
+            showlegend=True,
+            xaxis=dict(range=[mean_iv.index.min(), mean_iv.index.max()]),
+            xaxis2=dict(range=[mean_iv.index.min(), mean_iv.index.max()])  # 对齐第二个子图的x轴范围
         )
-
+        
         # 保存图表为HTML文件
         fig.write_html(os.path.join(BACKTEST_SYMBOL_DIR, f'{symbol}_iv_analysis.html'))
-
+        
         # 保存带有分位数的数据
-        iv_index.to_csv(os.path.join(BACKTEST_SYMBOL_DIR, f'{symbol}_iv_index_with_percentile.csv'), index=False)
+        mean_iv.to_csv(os.path.join(BACKTEST_SYMBOL_DIR, f'{symbol}_iv_index_with_percentile.csv'), index=False)
