@@ -35,7 +35,7 @@ if __name__ == '__main__':
     # backtrader = BackTrader(initial_capital=5000, strategy_params={'name': 'sell_straddle','exe_price_gear': 6, 'mature_gear': 0} ,data=data, date_interval=['2020-01-01 00:00:00', '2024-11-18 00:00:00'], fraction=0.001, portfolio_num=0.1)
     trading_logger = TradingLogger()
     # backtrader = BackTrader(initial_capital=50000, strategy_params={'name': 'sell_straddle','exe_price_gear':4, 'mature_gear': 1} ,data=data, date_interval=['2024-01-01 00:00:00', '2025-01-01 00:00:00'], fraction=0.01, open_type='volume_ratio_abs', open_value=0.01, trading_logger=trading_logger,target=target)
-    backtrader = BackTrader(initial_capital=50000, strategy_params={'name': 'sell_straddle','exe_price_gear':0, 'mature_gear': 4} ,data=data, date_interval=['2024-01-01 00:00:00', '2025-01-01 00:00:00'], fraction=0.01, open_type='num_value', open_value=1, trading_logger=trading_logger,target=target)
+    backtrader = BackTrader(initial_capital=50000, strategy_params={'name': 'sell_straddle','exe_price_gear':1, 'mature_gear': 4} ,data=data, date_interval=['2024-01-01 00:00:00', '2025-01-01 00:00:00'], fraction=0.01, open_type='num_value', open_value=1, trading_logger=trading_logger,target=target)
     # backtrader.trade_with_ddh(hedge_type=2)
     # backtrader.trade_with_ddh_at_hour(hedge_type=2)
     backtrader.trade()

@@ -169,14 +169,21 @@ class Position:
     #             elif isinstance(record.item, LinearInstrument):  # if is linear thing
     #                 self.delta += tmp if record.item.pos_type == 'long' else (-tmp)
     #     return self.delta, self.gamma, self.vega, self.theta
-    def update_greeks(self, target_price: float, unrisk_rate: float, timestamp: pd.Timestamp, time_data: pd.DataFrame):
+    def update_greeks(self, target_price: float, timestamp: pd.Timestamp, time_data: pd.DataFrame, unrisk_rate: float=UNRISK_RATE):
         self.delta, self.gamma, self.vega, self.theta = 0,0,0,0
         if self.records:
             for name, record in self.records.items():
                 # todo Q1 币本位还是u本位的问题
                 tmp = target_price * record.amount
                 if isinstance(record.item, Option):
-                    delta, gamma, vega, theta = record.item.update_greeks(target_price, unrisk_rate, timestamp)
+                    try:
+                        #todo here have to update records’ greeks
+                        option_row = time_data[time_data[OPTION_NAME] == record.item.name]
+                        delta, gamma, vega, theta = option_row['delta'].values[0], option_row['gamma'].values[0], option_row['vega'].values[0], option_row['theta'].values[0]
+                    except Exception as e:
+                        logger.debug(f'{timestamp}, OPTION: {record.item.name} is error')
+                        delta, gamma, vega, theta = record.item.update_greeks(target_price, unrisk_rate, timestamp)
+
                     self.delta += delta * tmp
                     self.gamma += gamma * tmp
                     self.vega += vega * tmp
@@ -579,6 +586,7 @@ class BackTrader:
     def routine_update_position(self, time_stamp, time_data, now_target_price):
         self.update_records(time_stamp, time_data, now_target_price)
         self.position.update(time_stamp)
+        self.position.update_greeks(target_price=now_target_price, time_data=time_data, timestamp=time_stamp)
         self.trading_logger.routine_positions.append(get_position(self.position))
     def trade_with_ddh(self, hedge_type=1):
         for time_stamp in self.time_stamps:
@@ -1347,10 +1355,10 @@ class DynamicHedger:
         """
         return current_time.hour == hour
 
-    def at_delta(self, current_time: pd.Timestamp, current_position: Position, target_price: float, unrisk_rate: float,
-                 threshold: float = 0.1):
+    def at_delta(self, current_time: pd.Timestamp, current_position: Position, target_price: float, time_data: pd.DataFrame, unrisk_rate: float=UNRISK_RATE,
+                 threshold: float = 0.1) -> bool:
         with timer():
-            delta, _, _, _ = current_position.update_greeks(target_price, unrisk_rate, current_time)
+            delta, _, _, _ = current_position.update_greeks(target_price=target_price, time_data=time_data, timestamp=current_time)
         return abs(delta) >= threshold  # 当delta达到设定的阈值时，返回true
 
     def hedge(self, current_time: pd.Timestamp, current_position: Position, time_data: pd.DataFrame,
@@ -1362,7 +1370,7 @@ class DynamicHedger:
 
     def keep_sum_hedge(self, current_time: pd.Timestamp, current_position: Position, time_data: pd.DataFrame,
                        target_price: float, unrisk_rate: float, threshold: float = 0.1):
-        if self.at_delta(current_time, current_position, target_price, unrisk_rate, threshold):
+        if self.at_delta(current_time, current_position, target_price, time_data, unrisk_rate, threshold):
             delta_abs_sum = 0
             total_capital = current_position.mark_volume  # 当前持仓的总价值
             options = {}
@@ -1371,8 +1379,7 @@ class DynamicHedger:
                 delta_abs_sum += abs(record.item.delta)
                 options[record.item.name] = record.item
             alloc_ratio = pd.DataFrame({'name': [record.item.name for name, record in current_position.records.items()],
-                                        'alloc_ratio': [abs(record.item.delta) / delta_abs_sum - 1 for record in
-                                                        current_position.records],
+                                        'alloc_ratio': [abs(record.item.delta) / delta_abs_sum - 1 for name, record in current_position.records.items()],
                                         'price': [record.item.mark_price for name, record in current_position.records.items()]})
             alloc_ratio['amount'] = round(total_capital * alloc_ratio['alloc_ratio'] / alloc_ratio['price'],
                                           MIN_PRECISION[self.target])
@@ -1382,7 +1389,7 @@ class DynamicHedger:
 
     def use_target_hedge(self, current_time: pd.Timestamp, current_position: Position, time_data: pd.DataFrame,
                        target_price: float, unrisk_rate: float, threshold: float = 0.1):
-        if self.at_delta(current_time, current_position, target_price, unrisk_rate, threshold):
+        if self.at_delta(current_time, current_position, target_price, time_data, unrisk_rate, threshold):
             logger.info(f'current_time {current_time}, current delta is {current_position.delta} out of {threshold}, start hedging')
             total_capital = current_position.mark_volume  # 当前持仓的总价值
             # todo 进行资费结算
