@@ -129,7 +129,7 @@ class Record:
         self.cost_price = cost_price
         self.cost_volume = amount * cost_price
         self.mark_volume = amount * item.mark_price
-        self.unpnl = 0  # unrealized pnl
+        self.unrealized_pnl = 0  # unrealized pnl
 
 
 
@@ -150,6 +150,9 @@ class Position:
         self.mark_volume = 0
         self.option_mark_volume = 0
         self.linear_mark_volume = 0
+        self.unrealized_pnl = 0
+        self.option_unrealized_pnl = 0
+        self.linear_unrealized_pnl = 0
         try:
             self.update(current_time)
         except Exception as e:
@@ -167,7 +170,37 @@ class Position:
             [record.mark_volume for name, record in self.records.items() if isinstance(record.item, Option)]) if self.records else 0
         self.linear_mark_volume = sum(
             [record.mark_volume for name, record in self.records.items() if isinstance(record.item, LinearInstrument)]) if self.records else 0
+        self.linear_unrealized_pnl = sum(
+            [record.unrealized_pnl for name, record in self.records.items() if isinstance(record.item, LinearInstrument)]) if self.records else 0
 
+    def update_records(self, current_time: pd.Timestamp, time_data: pd.DataFrame, now_target_price):
+        if self.records:
+            for name, record in self.records.items():
+                record.current_time = current_time
+                if isinstance(record.item, Option):
+                    option_row = time_data[time_data[OPTION_NAME] == record.item.name]
+                    if not option_row.empty:
+                        record.item.snapshot_time = current_time
+                        # record.item.target_price = float(option_row[f'{self.target}_price'].iloc[0])
+                        record.item.target_price = float(now_target_price)
+                        record.item.ask_price = float(option_row[ASK_PRICE].iloc[0]) if record.item.quote == 'um' else float(
+                            option_row[ASK_PRICE].iloc[0]) * record.item.target_price
+                        record.item.bid_price = float(option_row[BID_PRICE].iloc[0]) if record.item.quote == 'um' else float(
+                            option_row[BID_PRICE].iloc[0]) * record.item.target_price
+                        record.item.mark_price = float(
+                            option_row[MARK_PRICE].iloc[0]) if record.item.quote == 'um' else float(
+                            option_row[MARK_PRICE].iloc[0]) * record.item.target_price
+                        record.mark_volume = record.amount * record.item.mark_price
+                        record.unrealized_pnl = record.mark_volume - record.cost_volume
+                elif isinstance(record.item, LinearInstrument):
+                    record.item.snapshot_time = current_time
+                    record.item.ask_price = now_target_price
+                    record.item.bid_price = now_target_price
+                    record.item.mark_price = now_target_price
+                    record.mark_volume = record.amount * now_target_price
+                    record.unrealized_pnl = record.mark_volume - record.cost_volume
+                self.records[name] = record
+            return self.records
     # def update_greeks(self, target_price: float, unrisk_rate: float, timestamp: pd.Timestamp):
     #     self.delta, self.gamma, self.vega, self.theta = 0,0,0,0
     #     if self.records:
@@ -620,34 +653,10 @@ class BackTrader:
             open_func = None
         open_func(time_stamp, time_data)
 
-    def update_records(self, current_time: pd.Timestamp, time_data: pd.DataFrame, now_target_price):
-        if self.position and self.position.records:
-            for name, record in self.position.records.items():
-                record.current_time = current_time
-                if isinstance(record.item, Option):
-                    option_row = time_data[time_data[OPTION_NAME] == record.item.name]
-                    if not option_row.empty:
-                        record.item.snapshot_time = current_time
-                        # record.item.target_price = float(option_row[f'{self.target}_price'].iloc[0])
-                        record.item.target_price = float(now_target_price)
-                        record.item.ask_price = float(option_row[ASK_PRICE].iloc[0]) if record.item.quote == 'um' else float(
-                            option_row[ASK_PRICE].iloc[0]) * record.item.target_price
-                        record.item.bid_price = float(option_row[BID_PRICE].iloc[0]) if record.item.quote == 'um' else float(
-                            option_row[BID_PRICE].iloc[0]) * record.item.target_price
-                        record.item.mark_price = float(
-                            option_row[MARK_PRICE].iloc[0]) if record.item.quote == 'um' else float(
-                            option_row[MARK_PRICE].iloc[0]) * record.item.target_price
-                        record.mark_volume = record.amount * record.item.mark_price
-                        record.unpnl = record.mark_volume - record.cost_volume
-                elif isinstance(record.item, LinearInstrument):
-                    record.item.snapshot_time = current_time
-                    record.item.ask_price = now_target_price
-                    record.item.bid_price = now_target_price
-                    record.item.mark_price = now_target_price
-                    record.mark_volume = record.amount * now_target_price
+
 
     def routine_update_position(self, time_stamp, time_data, now_target_price):
-        self.update_records(time_stamp, time_data, now_target_price)
+        self.position.update_records(time_stamp, time_data, now_target_price)
         self.position.update(time_stamp)
         self.position.update_greeks(target_price=now_target_price, time_data=time_data, timestamp=time_stamp)
         self.trading_logger.routine_positions.append(get_position(self.position))
@@ -747,7 +756,7 @@ class BackTrader:
 
 
         sharpe_ratio = self.trade_trails['return_per_time'].mean() / self.trade_trails['return_per_time'].std()
-        daily_turnover = (self.trade_trails['mark_volume'] / self.trade_trails['current_capital']).sum() / (
+        daily_turnover = (self.trade_trails['mark_volume'].abs() / self.trade_trails['current_capital']).sum() / (
                     self.real_end_time - self.real_start_time).days
 
         # 计算其他统计数据
@@ -862,7 +871,7 @@ class BackTrader:
         trade_profits = pd.DataFrame(self.trading_logger.trade_profits)
         trade_positions = pd.DataFrame(self.trading_logger.trade_positions)
         routine_position = pd.DataFrame(self.trading_logger.routine_positions)
-        routine_position['equity'] = routine_position['current_capital'] + routine_position['option_mark_volume']
+        routine_position['equity'] = routine_position['current_capital'] + routine_position['option_mark_volume'] + routine_position['linear_unrealized_pnl']
         routine_position['curve']  = routine_position['equity'] / self.initial_capital
         routine_position['max2here'] = routine_position['curve'].expanding().max()
         # 计算到历史最高值到当日的跌幅,draw-down
@@ -929,12 +938,12 @@ class BackTrader:
         # ===================================================fig 1======================================================
         # 添加累积净值折线图
         fig.add_trace(go.Scatter(x=routine_position['current_time'], y=routine_position['curve'],
-                                 mode='lines+markers', name='累积净值'), row=1, col=1)
+                                 mode='lines', name='累积净值'), row=1, col=1)
         # 添加累积净值折线图
         fig.add_trace(go.Scatter(x=self.trade_trails['current_time'], y=self.trade_trails[f'{self.target}_price'] /
                                                                         self.trade_trails[f'{self.target}_price'].loc[
                                                                             0],
-                                 mode='lines+markers', name='target_price'), row=1, col=1)
+                                 mode='lines', name='target_price'), row=1, col=1)
         fig.add_trace(
             go.Scatter(x=routine_position['current_time'], y=routine_position['dd2here'],
                        mode='lines',
@@ -966,7 +975,7 @@ class BackTrader:
                                  mode='lines', name='delta', line=dict(color='blue')), row=3, col=1,secondary_y=True)
         # ===================================================fig 4======================================================
         fig.add_trace(go.Scatter(x=self.trade_trails['current_time'], y=self.trade_trails[f'{self.target}_volatility'],
-                                 mode='lines+markers', name=f'{self.target}_volatility'), row=4, col=1)
+                                 mode='lines', name=f'{self.target}_volatility'), row=4, col=1)
 
         # 添加统计信息到表格
         stats_table = go.Table(
