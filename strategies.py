@@ -98,10 +98,11 @@ class Option:
         self.quote = quote
 
     def update_greeks(self, target_price: float, unrisk_rate: float, timestamp: pd.Timestamp, calculate=True, delta: float=None, gamma: float=None, vega: float=None, theta: float=None):
+        # todo Q1 币本位还是u本位的问题
         if calculate:
-            self.delta = delta_without_sigma(target_price, self.exe_price, self.mark_price, unrisk_rate,
+            self.delta = target_price * delta_without_sigma(target_price, self.exe_price, self.mark_price, unrisk_rate,
                                              (self.expiry_date - timestamp).seconds / 3600, option_type=self.option_type)
-            self.gamma = gamma_without_sigma(target_price, self.exe_price, self.mark_price, unrisk_rate,
+            self.gamma = target_price * gamma_without_sigma(target_price, self.exe_price, self.mark_price, unrisk_rate,
                                              (self.expiry_date - timestamp).seconds / 3600, option_type=self.option_type)
             self.vega = vega_without_sigma(target_price, self.exe_price, self.mark_price, unrisk_rate,
                                            (self.expiry_date - timestamp).seconds / 3600,
@@ -109,8 +110,8 @@ class Option:
             self.theta = theta_without_sigma(target_price, self.exe_price, self.mark_price, unrisk_rate,
                                              (self.expiry_date - timestamp).seconds / 3600, option_type=self.option_type)
         else:
-            self.delta = delta
-            self.gamma = gamma
+            self.delta = target_price * delta
+            self.gamma = target_price * gamma
             self.vega = vega
             self.theta = theta
 
@@ -187,20 +188,19 @@ class Position:
         if self.records:
             for name, record in self.records.items():
                 # todo Q1 币本位还是u本位的问题
-                tmp = target_price * record.amount
                 if isinstance(record.item, Option):
                     try:
-                        #todo here have to update records’ greeks
                         option_row = time_data[time_data[OPTION_NAME] == record.item.name]
                         delta, gamma, vega, theta = record.item.update_greeks(target_price, unrisk_rate, timestamp, calculate=False, delta=option_row['delta'].values[0], gamma=option_row['gamma'].values[0], vega=option_row['vega'].values[0], theta=option_row['theta'].values[0])
                     except Exception as e:
                         logger.debug(f'{timestamp}, OPTION: {record.item.name} is error, convert to calculate')
                         delta, gamma, vega, theta = record.item.update_greeks(target_price, unrisk_rate, timestamp)
-                    self.delta += delta * tmp
-                    self.gamma += gamma * tmp
-                    self.vega += vega * tmp
-                    self.theta += theta
+                    self.delta += delta * record.amount
+                    self.gamma += gamma * record.amount
+                    self.vega += vega * record.amount
+                    self.theta += theta * record.amount
                 elif isinstance(record.item, LinearInstrument):  # if is linear thing
+                    tmp = target_price * record.amount
                     self.delta += tmp if record.item.pos_type == 'long' else (-tmp)
         return self.delta, self.gamma, self.vega, self.theta
 
@@ -213,7 +213,7 @@ class Position:
         if self.records:
             for name, record in self.records.items():
                 if isinstance(record.item, Option):
-                    delta += record.item.delta
+                    delta += record.item.delta*record.amount
         return delta
 
     def get_options_gamma(self):
@@ -221,7 +221,7 @@ class Position:
         if self.records:
             for name, record in self.records.items():
                 if isinstance(record.item, Option):
-                    gamma += record.item.gamma
+                    gamma += record.item.gamma*record.amount
         return gamma
 
     def get_options_vega(self):
@@ -229,7 +229,7 @@ class Position:
         if self.records:
             for name, record in self.records.items():
                 if isinstance(record.item, Option):
-                    vega += record.item.vega
+                    vega += record.item.vega*record.amount
         return vega
 
     def get_options_theta(self):
@@ -237,7 +237,7 @@ class Position:
         if self.records:
             for name, record in self.records.items():
                 if isinstance(record.item, Option):
-                    theta += record.item.theta
+                    theta += record.item.theta*record.amount
         return theta
 
 
@@ -365,7 +365,7 @@ class BackTrader:
                 elif record.side == 'sell' and option.option_type == PUT:
                     position_pnl += min(now_target_price - option.exe_price, 0) * abs(record.amount)
             if isinstance(record.item, LinearInstrument):
-                target_pnl += record.amount*now_target_price - record.cost_volume
+                target_pnl += record.amount*(now_target_price - record.cost_price)
                 logger.info(f'清仓标的， now price {now_target_price}, cost_price { record.cost_price}, target_pnl = {target_pnl}')
                 self.trading_logger.trade_profits.append(
                     {'current_time': current_time - pd.Timedelta(seconds=1), 'pnl': target_pnl, 'pnl_type': 'target_pnl'})
@@ -657,7 +657,7 @@ class BackTrader:
             current_time = pd.to_datetime(time_stamp)
             now_target_price = self.target_data.loc[current_time].values[0]
             time_data = self.data[self.data[SNAPSHOT_TIME] == current_time]
-            if current_time == pd.Timestamp('2024-03-05 20:00:00'):
+            if current_time == pd.Timestamp('2024-03-04 20:00:00'):
                 print('debug')
             # todo 进行资费结算
 
@@ -862,7 +862,7 @@ class BackTrader:
         trade_profits = pd.DataFrame(self.trading_logger.trade_profits)
         trade_positions = pd.DataFrame(self.trading_logger.trade_positions)
         routine_position = pd.DataFrame(self.trading_logger.routine_positions)
-        routine_position['equity'] = routine_position['current_capital']
+        routine_position['equity'] = routine_position['current_capital'] + routine_position['option_mark_volume']
         routine_position['curve']  = routine_position['equity'] / self.initial_capital
         routine_position['max2here'] = routine_position['curve'].expanding().max()
         # 计算到历史最高值到当日的跌幅,draw-down
@@ -926,6 +926,7 @@ class BackTrader:
                 [{"type": "table"}],
             ],
         )
+        # ===================================================fig 1======================================================
         # 添加累积净值折线图
         fig.add_trace(go.Scatter(x=routine_position['current_time'], y=routine_position['curve'],
                                  mode='lines+markers', name='累积净值'), row=1, col=1)
@@ -944,26 +945,26 @@ class BackTrader:
             secondary_y=True, row=1, col=1,
         )
 
-
-
+        # ===================================================fig 2======================================================
         # 调整每笔收益散点图以使其更加显眼，并在每个点上标明此单收益
         fig.add_trace(go.Scatter(x=self.trade_trails['current_time'], y=self.trade_trails['pnl'],
-                                 mode='markers+text', name='每笔收益',
-                                 marker_color=self.trade_trails['pnl_type'].map({'premium': 'green', 'return': 'red', 'target_pnl': 'yellow'}),
-                                 opacity=1, ),
-                      row=2, col=1)
+                   mode='markers+text', name='每笔收益',
+                   marker_color=self.trade_trails['pnl_type'].map({'premium': 'rgb(105, 139, 34)', 'return': 'rgb(154, 205, 50)', 'target_pnl': 'orange'}),
+                   opacity=1, ),
+        row=2, col=1)
         # 添加一条横线，y值为-1500
         fig.add_trace(go.Scatter(x=[self.trade_trails['current_time'].min(), self.trade_trails['current_time'].max()],
                                  y=[self.trade_trails['pnl'].mean(), self.trade_trails['pnl'].mean()],
-                                 mode='lines', name='mean pnl', line=dict(color='blue', width=2)), row=2, col=1)
+                                 mode='lines', name='mean_pnl', line=dict(color='blue', width=2)), row=2, col=1)
 
+        # ===================================================fig 3======================================================
         fig.add_trace(go.Scatter(x=routine_position['current_time'], y=routine_position['linear_mark_volume'],
-                                 mode='lines+markers', name='对冲仓位'), row=3, col=1)
+                         mode='lines', name='hedging_pos', line=dict(color='orange')), row=3, col=1, secondary_y=True)
         fig.add_trace(go.Scatter(x=routine_position['current_time'], y=routine_position['option_mark_volume'],
-                                 mode='lines+markers', name='期权仓位'),secondary_y=True, row=3, col=1)
+                                 mode='lines', name='options_vol', line=dict(color='rgb(105, 139, 34)')), row=3, col=1)
         fig.add_trace(go.Scatter(x=routine_position['current_time'], y=routine_position['delta'],
-                                 mode='lines+markers', name='position delta'),secondary_y=True, row=3, col=1)
-
+                                 mode='lines', name='delta', line=dict(color='blue')), row=3, col=1,secondary_y=True)
+        # ===================================================fig 4======================================================
         fig.add_trace(go.Scatter(x=self.trade_trails['current_time'], y=self.trade_trails[f'{self.target}_volatility'],
                                  mode='lines+markers', name=f'{self.target}_volatility'), row=4, col=1)
 
@@ -1388,6 +1389,7 @@ class DynamicHedger:
         elif hedge_type == 2:
             return self.use_target_hedge(current_time, current_position, time_data, target_price, unrisk_rate,threshold=threshold)
 
+
     def keep_sum_hedge(self, current_time: pd.Timestamp, current_position: Position, time_data: pd.DataFrame,
                        target_price: float, unrisk_rate: float, threshold: float = 0.1):
         if self.at_delta(current_time, current_position, target_price, time_data, unrisk_rate, threshold):
@@ -1405,6 +1407,7 @@ class DynamicHedger:
                                           MIN_PRECISION[self.target])
             return trade_till_good(current_time, current_position, alloc_ratio, options, self.trading_logger)
         else:
+            current_position.update(current_time)
             return current_position
 
     def use_target_hedge(self, current_time: pd.Timestamp, current_position: Position, time_data: pd.DataFrame,
@@ -1425,8 +1428,10 @@ class DynamicHedger:
             logger.info(f'current_swap_record: {current_position.records[self.target]}')
             self.trading_logger.trade_positions.append(get_position(current_position))
             logger.info(f'current_capital: {current_position.current_capital}')
+            current_position.update(current_time)
             return current_position
         else:
+            current_position.update(current_time)
             return current_position
 
 def trade_target_swap(to_amount: float, current_position: Position, target: str, current_time: pd.Timestamp, target_price: float, trading_logger: TradingLogger):
@@ -1510,6 +1515,7 @@ def trade_till_good(current_time: pd.Timestamp, current_position: Position, allo
     :param trading_logger:
     :return:
     """
+
     if not pd.DataFrame(current_position.records).empty:
         records_df = pd.DataFrame({
             'name': [record.item.name for name, record in current_position.records.items()],
@@ -1519,6 +1525,7 @@ def trade_till_good(current_time: pd.Timestamp, current_position: Position, allo
             MARK_PRICE: [record.item.mark_price for name, record in current_position.records.items()],
             'amount': [record.amount for name, record in current_position.records.items()]
         })
+        if_open = False
     else:
         records_df = pd.DataFrame({
             'name': alloc_ratio['name'],
@@ -1527,7 +1534,7 @@ def trade_till_good(current_time: pd.Timestamp, current_position: Position, allo
             ASK_PRICE: [0] * len(alloc_ratio['name']),
             MARK_PRICE: [0] * len(alloc_ratio['name']),
             'amount': [0] * len(alloc_ratio['name'])})
-
+        if_open = True
     trades = pd.merge(records_df, alloc_ratio, how='outer', suffixes=('_now', '_target'), on='name')
     trades['amount_trade'] = trades['amount_target'] - trades['amount_now']
     position_pnl = 0
@@ -1544,12 +1551,12 @@ def trade_till_good(current_time: pd.Timestamp, current_position: Position, allo
     new_position.current_time = current_time
     new_position.current_capital += position_pnl
     new_position.records = records
-
-    logger.info(f'position opened:{current_time}')
-    trading_logger.trade_profits.append({'current_time': current_time, 'pnl': position_pnl})
+    if if_open:
+        logger.info(f'position opened:{current_time}')
+        trading_logger.trade_profits.append({'current_time': current_time, 'pnl': position_pnl, 'pnl_type': 'premium'})
     trading_logger.num_rounds += 1
     trading_logger.trade_positions.append(get_position(new_position))
-    logger.info(f'option pnl: {position_pnl} current_capital: {new_position}')
+    logger.info(f'option pnl: {position_pnl} current_position: {new_position}')
     new_position.update(current_time)
     return new_position
 
