@@ -7,6 +7,7 @@
 """
 import os
 from math import sqrt
+from turtle import Turtle
 from typing import Literal, Dict
 
 import numpy as np
@@ -44,6 +45,8 @@ def make_order(item, amount=1.0, fraction=0.001, opponent=False, side: str = 'bu
     :param side:  buy or sell
     :return: cash_flow , bargained_price
     """
+
+    # todo 这里手续费考虑有问题
     assert side in ['buy', 'sell'], "side must be 'buy' or 'sell'"
     assert amount >= 0, "amount must be abs value"
     if side == 'sell':
@@ -153,6 +156,7 @@ class Position:
         self.unrealized_pnl = 0
         self.option_unrealized_pnl = 0
         self.linear_unrealized_pnl = 0
+        self.expiry_date = pd.Timestamp.max
         try:
             self.update(current_time)
         except Exception as e:
@@ -172,8 +176,8 @@ class Position:
             [record.mark_volume for name, record in self.records.items() if isinstance(record.item, LinearInstrument)]) if self.records else 0
         self.linear_unrealized_pnl = sum(
             [record.unrealized_pnl for name, record in self.records.items() if isinstance(record.item, LinearInstrument)]) if self.records else 0
-
-    def update_records(self, current_time: pd.Timestamp, time_data: pd.DataFrame, now_target_price):
+        self.expire_date = min([record.item.expiry_date for name, record in self.records.items()]) if self.records else None
+    def update_records(self, current_time: pd.Timestamp, time_data: pd.DataFrame, now_target_price: float):
         if self.records:
             for name, record in self.records.items():
                 record.current_time = current_time
@@ -190,13 +194,17 @@ class Position:
                         record.item.mark_price = float(
                             option_row[MARK_PRICE].iloc[0]) if record.item.quote == 'um' else float(
                             option_row[MARK_PRICE].iloc[0]) * record.item.target_price
-                        record.mark_volume = record.amount * record.item.mark_price
-                        record.unrealized_pnl = record.mark_volume - record.cost_volume
+                    else:
+                        logger.warning(f'{current_time}, there is no {record.item.name} skill update.')
+                    record.cost_volume = record.amount * record.cost_price
+                    record.mark_volume = record.amount * record.item.mark_price
+                    record.unrealized_pnl = record.mark_volume - record.cost_volume
                 elif isinstance(record.item, LinearInstrument):
                     record.item.snapshot_time = current_time
                     record.item.ask_price = now_target_price
                     record.item.bid_price = now_target_price
                     record.item.mark_price = now_target_price
+                    record.cost_volume = record.amount * record.cost_price
                     record.mark_volume = record.amount * now_target_price
                     record.unrealized_pnl = record.mark_volume - record.cost_volume
                 self.records[name] = record
@@ -661,17 +669,16 @@ class BackTrader:
         self.position.update_greeks(target_price=now_target_price, time_data=time_data, timestamp=time_stamp)
         self.trading_logger.routine_positions.append(get_position(self.position))
 
-    def trade_with_ddh(self, hedge_type=1):
+    def trade_with_ddh(self, hedge_type='use_target_hedge_channel'):
         for time_stamp in self.time_stamps:
             current_time = pd.to_datetime(time_stamp)
             now_target_price = self.target_data.loc[current_time].values[0]
             time_data = self.data[self.data[SNAPSHOT_TIME] == current_time]
-            if current_time == pd.Timestamp('2024-03-04 20:00:00'):
+            if current_time == pd.Timestamp('2024-04-02 20:00:00'):
                 print('debug')
             # todo 进行资费结算
 
             self.routine_update_position(time_stamp, time_data, now_target_price)
-
             logger.info(f'--{current_time}-- target price is {now_target_price}')
             logger.info(f'current capital is {self.position.current_capital}')
             if not self.empty_position():
@@ -683,9 +690,9 @@ class BackTrader:
                     self.open_position(time_stamp, time_data)
                 else:
                     dynamic_hedger = DynamicHedger(time_stamp, time_data, self.trading_logger)
-                    if dynamic_hedger.at_time(time_stamp, 20):
-                        self.position = dynamic_hedger.hedge(current_time, self.position, time_data,
-                                                                      now_target_price, UNRISK_RATE, threshold=0.5*self.position.current_capital, hedge_type=hedge_type, )
+                    # if dynamic_hedger.at_time(time_stamp, 20):
+                    self.position = dynamic_hedger.hedge(current_time, self.position, time_data,
+                                                                  now_target_price, UNRISK_RATE, threshold1=0.5*self.position.current_capital, threshold2=0.25*self.position.current_capital, hedge_type=hedge_type, )
             else:
                 # open new position
                 self.open_position(time_stamp, time_data)
@@ -857,7 +864,10 @@ class BackTrader:
 
         fig.show()
 
-    def analyze_trade2(self):
+    def analyze_trade2(self, info=None):
+        title = f'{self.target}_{self.strategy_params["name"]}收益曲线图 {self.strategy_params.values()}'
+        if info:
+            title = f'{info}_{title}'
         # 计算总收益
         total_profit = self.position.current_capital - self.initial_capital
         total_return = (self.position.current_capital / self.initial_capital - 1)
@@ -921,8 +931,8 @@ class BackTrader:
         #                              right_on=SNAPSHOT_TIME, how='left')
 
 
-        self.trade_trails.to_csv(f'{self.save_dir}/trade_trails.csv', index=False)
-        routine_position.to_csv(f'{self.save_dir}/routine_position.csv', index=False)
+        self.trade_trails.to_csv(f'{self.save_dir}/{title}_trade_trails.csv', index=False)
+        routine_position.to_csv(f'{self.save_dir}/{title}_routine_position.csv', index=False)
 
         # 创建收益曲线图
         fig = make_subplots(
@@ -954,6 +964,8 @@ class BackTrader:
             secondary_y=True, row=1, col=1,
         )
 
+        fig.update_yaxes(title_text="累计净值", row=1, col=1)
+        fig.update_yaxes(title_text="最大回撤", secondary_y=True, row=1, col=1)
         # ===================================================fig 2======================================================
         # 调整每笔收益散点图以使其更加显眼，并在每个点上标明此单收益
         fig.add_trace(go.Scatter(x=self.trade_trails['current_time'], y=self.trade_trails['pnl'],
@@ -965,7 +977,8 @@ class BackTrader:
         fig.add_trace(go.Scatter(x=[self.trade_trails['current_time'].min(), self.trade_trails['current_time'].max()],
                                  y=[self.trade_trails['pnl'].mean(), self.trade_trails['pnl'].mean()],
                                  mode='lines', name='mean_pnl', line=dict(color='blue', width=2)), row=2, col=1)
-
+        # fig.update_xaxes(title_text="每笔收益", row=2, col=1)
+        fig.update_yaxes(title_text="value", row=2, col=1)
         # ===================================================fig 3======================================================
         fig.add_trace(go.Scatter(x=routine_position['current_time'], y=routine_position['linear_mark_volume'],
                          mode='lines', name='hedging_pos', line=dict(color='orange')), row=3, col=1, secondary_y=True)
@@ -973,10 +986,13 @@ class BackTrader:
                                  mode='lines', name='options_vol', line=dict(color='rgb(105, 139, 34)')), row=3, col=1)
         fig.add_trace(go.Scatter(x=routine_position['current_time'], y=routine_position['delta'],
                                  mode='lines', name='delta', line=dict(color='blue')), row=3, col=1,secondary_y=True)
+        # fig.update_xaxes(title_text="每笔收益", row=3, col=1)
+        # fig.update_yaxes(title_text="value", row=3, col=1)
+        # fig.update_yaxes(title_text="value", secondary_y=True, row=3, col=1)
         # ===================================================fig 4======================================================
         fig.add_trace(go.Scatter(x=self.trade_trails['current_time'], y=self.trade_trails[f'{self.target}_volatility'],
                                  mode='lines', name=f'{self.target}_volatility'), row=4, col=1)
-
+        fig.update_yaxes(title_text=f'{self.target}_volatility', row=4, col=1)
         # 添加统计信息到表格
         stats_table = go.Table(
             header=dict(values=["初始资金", "最终资金", "总收益", "总收益率(%)", "APR(%)", "APY(%)", "annual sharpe",
@@ -995,17 +1011,16 @@ class BackTrader:
 
         # 更新布局
         fig.update_layout(
-            title=f'{self.target}_{self.strategy_params["name"]}收益曲线图 {self.strategy_params.items()}',
-            xaxis_title='时间',
-            yaxis_title='累积净值',
-            yaxis2_title='最大回撤',
+            title=title,
+            height=1600,
             legend=dict(x=0, y=1.2, orientation='h')
         )
+
         import plotly.io as pio
 
         pio.renderers.default = 'browser'  # 或尝试其他渲染模式
 
-        pio.write_html(fig, f'{self.save_dir}/{self.target}_{self.strategy_params["name"]}收益曲线图 {self.strategy_params.items()}.html')
+        pio.write_html(fig, f'{self.save_dir}/{title}.html')
 
         fig.show()
 
@@ -1392,13 +1407,15 @@ class DynamicHedger:
         return abs(delta) >= threshold  # 当delta达到设定的阈值时，返回true
 
     def hedge(self, current_time: pd.Timestamp, current_position: Position, time_data: pd.DataFrame,
-                       target_price: float, unrisk_rate: float, threshold: float = 0.1, hedge_type = 1):
-        if hedge_type == 1:
-            return self.keep_sum_hedge(current_time, current_position, time_data, target_price, unrisk_rate,threshold=threshold)
-        elif hedge_type == 2:
-            return self.use_target_hedge(current_time, current_position, time_data, target_price, unrisk_rate,threshold=threshold)
-
-
+                       target_price: float, unrisk_rate: float, threshold1: float = 0.1, threshold2: float = 0.1, hedge_type = 1):
+        if hedge_type == 'keep_sum_hedge':
+            return self.keep_sum_hedge(current_time, current_position, time_data, target_price, unrisk_rate,threshold=threshold1)
+        elif hedge_type == 'use_target_hedge':
+            return self.use_target_hedge(current_time, current_position, time_data, target_price, unrisk_rate,threshold=threshold1)
+        elif hedge_type == 'use_target_hedge_channel':
+            return self.use_target_hedge_channel(current_time, current_position, time_data, target_price, unrisk_rate,threshold1=threshold1,threshold2=threshold2)
+        elif hedge_type == 'use_target_hedge_asymptotic':
+            return self.use_target_hedge_asymptotic(current_time, current_position, time_data, target_price, unrisk_rate,threshold1=threshold1,threshold2=threshold2)
     def keep_sum_hedge(self, current_time: pd.Timestamp, current_position: Position, time_data: pd.DataFrame,
                        target_price: float, unrisk_rate: float, threshold: float = 0.1):
         if self.at_delta(current_time, current_position, target_price, time_data, unrisk_rate, threshold):
@@ -1423,25 +1440,66 @@ class DynamicHedger:
                        target_price: float, unrisk_rate: float, threshold: float = 0.1):
         if self.at_delta(current_time, current_position, target_price, time_data, unrisk_rate, threshold):
             now_options_cash_delta =current_position.get_options_delta()
-
-
-            logger.info(f'current_time {current_time}, current options delta is {now_options_cash_delta} out of {threshold}, start hedging')
+            logger.info(f'current_time {current_time}, current delta is {current_position.delta} out of {threshold}, start hedging')
             # todo trade logic
-
             to_amount = -now_options_cash_delta/target_price
-
             current_position = trade_target_swap(
                 to_amount=to_amount, current_position=current_position, target=self.target, current_time=current_time, target_price=target_price, trading_logger=self.trading_logger)
-
             logger.info(f'current_position.records: {current_position.records}')
             logger.info(f'current_swap_record: {current_position.records[self.target]}')
             self.trading_logger.trade_positions.append(get_position(current_position))
             logger.info(f'current_capital: {current_position.current_capital}')
-            current_position.update(current_time)
-            return current_position
-        else:
-            current_position.update(current_time)
-            return current_position
+        current_position.update_records(current_time, time_data, target_price)
+        current_position.update(current_time)
+        return current_position
+
+
+    def use_target_hedge_channel(self, current_time: pd.Timestamp, current_position: Position, time_data: pd.DataFrame,
+                       target_price: float, unrisk_rate: float, threshold1: float = 0.1, threshold2: float = 0.1):
+        with timer():
+            delta, _, _, _ = current_position.update_greeks(target_price=target_price, time_data=time_data, timestamp=current_time)
+        if abs(delta) >= threshold1:  # 当delta达到设定的阈值时，返回true
+            now_options_cash_delta = current_position.get_options_delta()
+            logger.info(f'current_time {current_time}, current delta is {delta} out of {threshold1}, start hedging')
+            # todo trade logic
+            adjust_amount = -np.sign(delta)*abs(abs(threshold2) - abs(delta))/target_price
+            to_amount = adjust_amount + (delta - now_options_cash_delta)/target_price
+            current_position = trade_target_swap(
+                to_amount=to_amount, current_position=current_position, target=self.target, current_time=current_time, target_price=target_price, trading_logger=self.trading_logger)
+            logger.info(f'current_position.records: {current_position.records}')
+            logger.info(f'current_swap_record: {current_position.records[self.target]}')
+            self.trading_logger.trade_positions.append(get_position(current_position))
+            logger.info(f'current_capital: {current_position.current_capital}')
+        current_position.update_records(current_time, time_data, target_price)
+        current_position.update(current_time)
+        return current_position
+
+    def use_target_hedge_asymptotic(self, current_time: pd.Timestamp, current_position: Position, time_data: pd.DataFrame,
+                       target_price: float, unrisk_rate: float, threshold1: float = 0.1, threshold2: float = 0.1):
+        with timer():
+            delta, gamma, _, _ = current_position.update_greeks(target_price=target_price, time_data=time_data, timestamp=current_time)
+        adjust_param = (((gamma / target_price)**2*target_price*np.exp(-unrisk_rate*(current_position.expiry_date-current_time).days/365))**1/3  + 1)
+        # a = (gamma / target_price) ** 2
+        # b = np.exp(-unrisk_rate*(current_position.expiry_date-current_time).days/365)
+
+        threshold1 *= adjust_param
+        logger.info(f'adjust param is {adjust_param}')
+        if abs(delta) >= threshold1:  # 当delta达到设定的阈值时，返回true
+            now_options_cash_delta = current_position.get_options_delta()
+            logger.info(f'current_time {current_time}, current delta is {delta} out of {threshold1}, start hedging')
+            # todo trade logic
+            adjust_amount = -np.sign(delta)*abs(abs(threshold2) - abs(delta))/target_price
+            to_amount = adjust_amount + (delta - now_options_cash_delta)/target_price
+            current_position = trade_target_swap(
+                to_amount=to_amount, current_position=current_position, target=self.target, current_time=current_time, target_price=target_price, trading_logger=self.trading_logger)
+            logger.info(f'current_position.records: {current_position.records}')
+            logger.info(f'current_swap_record: {current_position.records[self.target]}')
+            self.trading_logger.trade_positions.append(get_position(current_position))
+            logger.info(f'current_capital: {current_position.current_capital}')
+        current_position.update_records(current_time, time_data, target_price)
+        current_position.update(current_time)
+        return current_position
+
 
 def trade_target_swap(to_amount: float, current_position: Position, target: str, current_time: pd.Timestamp, target_price: float, trading_logger: TradingLogger):
     # todo 调整 bid ask price
@@ -1464,7 +1522,7 @@ def trade_target_swap(to_amount: float, current_position: Position, target: str,
             if adjust_amount*now_amt < 0:
                 # 减仓
                 cash_flow, order_price = make_order(item=swap, amount=abs(adjust_amount), side='buy' if adjust_amount > 0 else 'sell')
-                position_pnl = adjust_amount * (order_price - current_swap_record.cost_price)
+                position_pnl = -adjust_amount * (order_price - current_swap_record.cost_price)
                 current_position.current_capital += position_pnl
                 trading_logger.trade_profits.append(
                     {'current_time': current_time - pd.Timedelta(seconds=1), 'pnl': position_pnl,
