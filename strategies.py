@@ -298,7 +298,7 @@ class TradingLogger(object):
 class BackTrader:
     def __init__(self, initial_capital=30000, strategy_params=None, trading_logger: TradingLogger = None,
                  data=None,target_data=None,  fraction=0.001, date_interval=None, open_type='IM', open_value=1,
-                 target: str = 'BTC', ):
+                 target: str = 'BTC', quote_type='cm'):
         # 创建一个字典来存储当前持仓
 
         if date_interval is None:
@@ -315,9 +315,20 @@ class BackTrader:
 
         self.strategy_params = strategy_params
         # 输入数据
-        self.data = data
+
         self.target = target
         self.target_data = self.process_target_data(target_data)
+        self.data = pd.merge(data, self.target_data, on='snapshot_time', how='left')
+
+        if quote_type == 'um':
+            self.data['mark_price'] /= self.data[f'{target}_price']
+            self.data['bid_price'] /= self.data[f'{target}_price']
+            self.data['ask_price'] /= self.data[f'{target}_price']
+            # todo 是否要调整um情况下的greeks
+            # self.data['delta'] /= self.data[f'{target}_price']
+            # self.data['gamma'] /= self.data[f'{target}_price']
+            # self.data['vega'] /= self.data[f'{target}_price']
+            # self.data['theta'] /= self.data[f'{target}_price']
         self.time_stamps = \
         data[(data[SNAPSHOT_TIME] >= date_interval[0]) & (data[SNAPSHOT_TIME] <= date_interval[1])][
             SNAPSHOT_TIME].unique()
@@ -699,6 +710,27 @@ class BackTrader:
 
 
     def trade(self):
+        for time_stamp in self.time_stamps:
+            current_time = pd.to_datetime(time_stamp)
+
+            # if current_time == pd.Timestamp('2024-08-06 08:00:00'):
+            #     print(1)
+            now_target_price = self.target_data.loc[current_time].values[0]
+            time_data = self.data[self.data[SNAPSHOT_TIME] == current_time]
+            self.routine_update_position(time_stamp, time_data, now_target_price)
+            logger.info(f'--{current_time}-- target price is {now_target_price}')
+            logger.info(f'current capital is {self.position.current_capital}')
+            if not self.empty_position():
+                if self.arrive_time(time_stamp):
+                    # close position
+                    self.close_position(time_stamp)
+                    # open new position
+                    self.open_position(time_stamp, time_data)
+            else:
+                # open new position
+                self.open_position(time_stamp, time_data)
+
+    def trade_wheel(self):
         for time_stamp in self.time_stamps:
             current_time = pd.to_datetime(time_stamp)
 
@@ -1641,3 +1673,5 @@ def get_position(position: Position, alter_time=None):
     if alter_time:
         infos['current_time'] = alter_time
     return infos
+
+
