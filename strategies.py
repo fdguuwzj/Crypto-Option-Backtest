@@ -46,7 +46,7 @@ def make_order(item, amount=1.0, fraction=0.001, opponent=False, side: str = 'bu
     :return: cash_flow , bargained_price
     """
 
-    # todo 这里手续费考虑有问题
+
     assert side in ['buy', 'sell'], "side must be 'buy' or 'sell'"
     assert amount >= 0, "amount must be abs value"
     if side == 'sell':
@@ -55,7 +55,7 @@ def make_order(item, amount=1.0, fraction=0.001, opponent=False, side: str = 'bu
             return item.bid_price * (1 - fraction) * amount, item.bid_price
         else:
             logger.debug(f'sell {amount} {item.name} at {item.mark_price}')
-            return item.mark_price * (1 + fraction) * amount, item.mark_price
+            return item.mark_price * (1 - fraction) * amount, item.mark_price
     else:
         if opponent:
             logger.debug(f'buy {amount} {item.name} at {item.ask_price}')
@@ -297,7 +297,7 @@ class TradingLogger(object):
 
 class BackTrader:
     def __init__(self, initial_capital=30000, strategy_params=None, trading_logger: TradingLogger = None,
-                 data=None,target_data=None,  fraction=0.001, date_interval=None, open_type='IM', open_value=1,
+                 data=None,target_data=None,  fraction=0.01, date_interval=None, open_type='IM', open_value=1,
                  target: str = 'BTC', quote_type='cm'):
         # 创建一个字典来存储当前持仓
 
@@ -462,7 +462,7 @@ class BackTrader:
                                                               'price': [down_put.mark_price, up_call.mark_price]}))
             options[down_put.name] = down_put
             options[up_call.name] = up_call
-            trade_till_good(current_time, self.position, alloc_ratio, options, self.trading_logger)
+            trade_till_good(current_time, self.position, alloc_ratio, options, self.fraction, self.trading_logger)
         else:
             logger.warning(f'{current_time} miss data, down_put is {down_put}, up_call is {up_call}, skipped')
 
@@ -485,7 +485,7 @@ class BackTrader:
                                                               'price': [down_put.mark_price]}))
             options[down_put.name] = down_put
 
-            trade_till_good(current_time, self.position, alloc_ratio, options, self.trading_logger)
+            trade_till_good(current_time, self.position, alloc_ratio, options, self.fraction, self.trading_logger)
         else:
             logger.warning(f'{current_time} miss data, down_put is {down_put}, skipped')
 
@@ -507,7 +507,7 @@ class BackTrader:
                                                               'price': [down_put.mark_price, up_call.mark_price]}))
             options[down_put.name] = down_put
             options[up_call.name] = up_call
-            trade_till_good(current_time, self.position, alloc_ratio, options, self.trading_logger)
+            trade_till_good(current_time, self.position, alloc_ratio, options, self.fraction, self.trading_logger)
         else:
             logger.warning(f'{current_time} miss data, down_put is {down_put}, up_call is {up_call}, skipped')
 
@@ -672,6 +672,48 @@ class BackTrader:
             open_func = None
         open_func(time_stamp, time_data)
 
+    def open_wheel_position(self, current_time, time_options, last_exe_prices):
+        last_exe_prices = sorted(last_exe_prices)
+        mature_date = self.get_mature_date(time_options, current_time, self.strategy_params['mature_gear'])
+        time_options = time_options[time_options[EXPIRATION] == mature_date]
+        now_target_price = self.target_data.loc[current_time].values[0]
+        exe_prices = sorted(time_options[EXE_PRICE].astype('float').unique())
+        down_exe_price, up_exe_price = self.get_exe_price(now_target_price, exe_prices,
+                                                          self.strategy_params['exe_price_gear'])
+
+        down_put = self.extract_option(time_options, down_exe_price, PUT)
+        up_call = self.extract_option(time_options, up_exe_price, CALL)
+        swap = LinearInstrument(snapshot_time=current_time, name=self.target, ask_price=now_target_price,
+                                bid_price=now_target_price, mark_price=now_target_price)
+        items = {swap.name:swap}
+        if down_put and up_call:
+            try:
+                if now_target_price > last_exe_prices[1]:
+                    alloc_ratio = self.calc_open_amount(pd.DataFrame({'name': [down_put.name, swap.name],
+                                                                      'alloc_ratio': [-1 / 2, -1 / 2],
+                                                                      'price': [down_put.mark_price, up_call.mark_price]}))
+                    items[down_put.name] = down_put
+                    items[up_call.name] = up_call
+                    trade_till_good(current_time, self.position, alloc_ratio, items, self.fraction, self.trading_logger)
+                elif now_target_price < last_exe_prices[0]:
+                    alloc_ratio = self.calc_open_amount(pd.DataFrame({'name': [swap.name, up_call.name],
+                                                                      'alloc_ratio': [1 / 2, -1 / 2],
+                                                                      'price': [down_put.mark_price, up_call.mark_price]}))
+                    items[down_put.name] = down_put
+                    items[up_call.name] = up_call
+                    trade_till_good(current_time, self.position, alloc_ratio, items, self.fraction, self.trading_logger)
+
+                else:
+                    alloc_ratio = self.calc_open_amount(pd.DataFrame({'name': [down_put.name, up_call.name],
+                                                                      'alloc_ratio': [-1 / 2, -1 / 2],
+                                                                      'price': [down_put.mark_price, up_call.mark_price]}))
+                    items[down_put.name] = down_put
+                    items[up_call.name] = up_call
+                    trade_till_good(current_time, self.position, alloc_ratio, items, self.fraction, self.trading_logger)
+            except:
+                print(1)
+        else:
+            logger.warning(f'{current_time} miss data, down_put is {down_put}, up_call is {up_call}, skipped')
 
 
     def routine_update_position(self, time_stamp, time_data, now_target_price):
@@ -700,10 +742,10 @@ class BackTrader:
                     # open new position
                     self.open_position(time_stamp, time_data)
                 else:
-                    dynamic_hedger = DynamicHedger(time_stamp, time_data, self.trading_logger)
+                    dynamic_hedger = DynamicHedger(time_stamp=time_stamp, time_data=time_data, trading_logger=self.trading_logger, fraction=self.fraction, target=self.target)
                     # if dynamic_hedger.at_time(time_stamp, 20):
                     self.position = dynamic_hedger.hedge(current_time, self.position, time_data,
-                                                                  now_target_price, UNRISK_RATE, threshold1=0.5*self.position.current_capital, threshold2=0.25*self.position.current_capital, hedge_type=hedge_type, )
+                                                                  now_target_price, UNRISK_RATE, threshold1=0.1*self.position.current_capital, threshold2=0.05*self.position.current_capital, hedge_type=hedge_type, )
             else:
                 # open new position
                 self.open_position(time_stamp, time_data)
@@ -744,9 +786,11 @@ class BackTrader:
             if not self.empty_position():
                 if self.arrive_time(time_stamp):
                     # close position
+
+                    exe_prices = [pos.item.exe_price for pos in self.position.records.values() if isinstance(pos.item, Option)]
                     self.close_position(time_stamp)
                     # open new position
-                    self.open_position(time_stamp, time_data)
+                    self.open_wheel_position(time_stamp, time_data, exe_prices)
             else:
                 # open new position
                 self.open_position(time_stamp, time_data)
@@ -896,7 +940,7 @@ class BackTrader:
 
         fig.show()
 
-    def analyze_trade2(self, info=None):
+    def analyze_trade2(self, info=None, show=True):
         title = f'{self.target}_{self.strategy_params["name"]}收益曲线图 {self.strategy_params.values()}'
         if info:
             title = f'{info}_{title}'
@@ -1053,8 +1097,8 @@ class BackTrader:
         pio.renderers.default = 'browser'  # 或尝试其他渲染模式
 
         pio.write_html(fig, f'{self.save_dir}/{title}.html')
-
-        fig.show()
+        if show:
+            fig.show()
 
     def rotation(self, routine_position=None):
         if routine_position == None:
@@ -1416,12 +1460,13 @@ class BoxSpreadBackTrader:
 
 
 class DynamicHedger:
-    def __init__(self, time_stamp, time_data, trading_logger: TradingLogger, target: str = 'BTC'):
+    def __init__(self, time_stamp, time_data, trading_logger: TradingLogger, target: str = 'BTC', fraction: float = 0.01):
 
         self.time_stamp = time_stamp
         self.time_data = time_data
         self.trading_logger = trading_logger
         self.target = target
+        self.fraction = fraction
 
     def at_time(self, current_time: pd.Timestamp, hour=16):
         """
@@ -1439,7 +1484,7 @@ class DynamicHedger:
         return abs(delta) >= threshold  # 当delta达到设定的阈值时，返回true
 
     def hedge(self, current_time: pd.Timestamp, current_position: Position, time_data: pd.DataFrame,
-                       target_price: float, unrisk_rate: float, threshold1: float = 0.1, threshold2: float = 0.1, hedge_type = 1):
+                       target_price: float, unrisk_rate: float, threshold1: float = 0.1, threshold2: float = 0.1, hedge_type: str ='keep_sum_hedge'):
         if hedge_type == 'keep_sum_hedge':
             return self.keep_sum_hedge(current_time, current_position, time_data, target_price, unrisk_rate,threshold=threshold1)
         elif hedge_type == 'use_target_hedge':
@@ -1463,7 +1508,8 @@ class DynamicHedger:
                                         'price': [record.item.mark_price for name, record in current_position.records.items()]})
             alloc_ratio['amount'] = round(total_capital * alloc_ratio['alloc_ratio'] / alloc_ratio['price'],
                                           MIN_PRECISION[self.target])
-            return trade_till_good(current_time, current_position, alloc_ratio, options, self.trading_logger)
+            return trade_till_good(current_time, current_position, alloc_ratio, options, self.fraction,
+                                   self.trading_logger)
         else:
             current_position.update(current_time)
             return current_position
@@ -1476,7 +1522,7 @@ class DynamicHedger:
             # todo trade logic
             to_amount = -now_options_cash_delta/target_price
             current_position = trade_target_swap(
-                to_amount=to_amount, current_position=current_position, target=self.target, current_time=current_time, target_price=target_price, trading_logger=self.trading_logger)
+                to_amount=to_amount, current_position=current_position, target=self.target, current_time=current_time, target_price=target_price, trading_logger=self.trading_logger,fraction=self.fraction)
             logger.info(f'current_position.records: {current_position.records}')
             logger.info(f'current_swap_record: {current_position.records[self.target]}')
             self.trading_logger.trade_positions.append(get_position(current_position))
@@ -1497,7 +1543,7 @@ class DynamicHedger:
             adjust_amount = -np.sign(delta)*abs(abs(threshold2) - abs(delta))/target_price
             to_amount = adjust_amount + (delta - now_options_cash_delta)/target_price
             current_position = trade_target_swap(
-                to_amount=to_amount, current_position=current_position, target=self.target, current_time=current_time, target_price=target_price, trading_logger=self.trading_logger)
+                to_amount=to_amount, current_position=current_position, target=self.target, current_time=current_time, target_price=target_price, trading_logger=self.trading_logger,fraction=self.fraction)
             logger.info(f'current_position.records: {current_position.records}')
             logger.info(f'current_swap_record: {current_position.records[self.target]}')
             self.trading_logger.trade_positions.append(get_position(current_position))
@@ -1523,7 +1569,7 @@ class DynamicHedger:
             adjust_amount = -np.sign(delta)*abs(abs(threshold2) - abs(delta))/target_price
             to_amount = adjust_amount + (delta - now_options_cash_delta)/target_price
             current_position = trade_target_swap(
-                to_amount=to_amount, current_position=current_position, target=self.target, current_time=current_time, target_price=target_price, trading_logger=self.trading_logger)
+                to_amount=to_amount, current_position=current_position, target=self.target, current_time=current_time, target_price=target_price, trading_logger=self.trading_logger,fraction=self.fraction)
             logger.info(f'current_position.records: {current_position.records}')
             logger.info(f'current_swap_record: {current_position.records[self.target]}')
             self.trading_logger.trade_positions.append(get_position(current_position))
@@ -1533,7 +1579,7 @@ class DynamicHedger:
         return current_position
 
 
-def trade_target_swap(to_amount: float, current_position: Position, target: str, current_time: pd.Timestamp, target_price: float, trading_logger: TradingLogger):
+def trade_target_swap(to_amount: float, current_position: Position, target: str, current_time: pd.Timestamp, target_price: float, trading_logger: TradingLogger, fraction:float=0.01):
     # todo 调整 bid ask price
     swap = LinearInstrument(snapshot_time=current_time, name=target, ask_price=target_price,
                             bid_price=target_price, mark_price=target_price)
@@ -1542,6 +1588,7 @@ def trade_target_swap(to_amount: float, current_position: Position, target: str,
     current_swap_record = current_position.get_record_by_name(target)
     if not current_swap_record:
         # 当前为空仓 开单不产生已实现盈亏
+        #todo 这里没有计入磨损
         cash_flow, order_price = make_order(item=swap, amount=abs(to_amount), side=to_pos_side)
         # current_position.current_capital += position_pnl
         current_position.records[target] = Record(item=swap, amount=to_amount, cost_price=order_price, side=to_pos_side)
@@ -1553,7 +1600,7 @@ def trade_target_swap(to_amount: float, current_position: Position, target: str,
             # 同向仓位，加减仓
             if adjust_amount*now_amt < 0:
                 # 减仓
-                cash_flow, order_price = make_order(item=swap, amount=abs(adjust_amount), side='buy' if adjust_amount > 0 else 'sell')
+                cash_flow, order_price = make_order(item=swap, amount=abs(adjust_amount),fraction=fraction ,side='buy' if adjust_amount > 0 else 'sell')
                 position_pnl = -adjust_amount * (order_price - current_swap_record.cost_price)
                 current_position.current_capital += position_pnl
                 trading_logger.trade_profits.append(
@@ -1564,7 +1611,7 @@ def trade_target_swap(to_amount: float, current_position: Position, target: str,
                 current_position.records[target] = current_swap_record
             else:
                 # 加仓
-                cash_flow, order_price = make_order(item=swap, amount=abs(adjust_amount), side='buy' if adjust_amount > 0 else 'sell')
+                cash_flow, order_price = make_order(item=swap, amount=abs(adjust_amount),fraction=fraction, side='buy' if adjust_amount > 0 else 'sell')
                 # 更新仓位记录
                 current_swap_record.cost_price = (order_price*adjust_amount + current_swap_record.amount*current_swap_record.cost_price)/to_amount
                 current_swap_record.amount = to_amount
@@ -1572,7 +1619,7 @@ def trade_target_swap(to_amount: float, current_position: Position, target: str,
                 current_position.records[target] = current_swap_record
         elif to_amount * now_amt < 0:
             # 反向仓位，先平仓，再开仓
-            cash_flow, order_price = make_order(item=swap, amount=abs(-now_amt),
+            cash_flow, order_price = make_order(item=swap, amount=abs(-now_amt),fraction=fraction,
                                           side='buy' if -now_amt > 0 else 'sell')
             position_pnl = now_amt * (order_price - current_swap_record.cost_price)
             current_position.current_capital += position_pnl
@@ -1588,7 +1635,7 @@ def trade_target_swap(to_amount: float, current_position: Position, target: str,
 
         else:
             # 清仓
-            cash_flow, order_price = make_order(item=swap, amount=abs(-now_amt),
+            cash_flow, order_price = make_order(item=swap, amount=abs(-now_amt),fraction=fraction,
                                           side='buy' if -now_amt > 0 else 'sell')
             position_pnl = now_amt * (order_price - current_swap_record.cost_price)
             current_position.current_capital += position_pnl
@@ -1602,11 +1649,12 @@ def trade_target_swap(to_amount: float, current_position: Position, target: str,
 
 
 
-def trade_till_good(current_time: pd.Timestamp, current_position: Position, alloc_ratio: pd.DataFrame, options: dict,
+def trade_till_good(current_time: pd.Timestamp, current_position: Position, alloc_ratio: pd.DataFrame, items: dict, fraction:float,
                     trading_logger: TradingLogger):
     """
     将当前仓位交易至目标仓位
 
+    :param fraction:
     :param current_time:
     :param current_position:
     :param alloc_ratio:
@@ -1639,12 +1687,14 @@ def trade_till_good(current_time: pd.Timestamp, current_position: Position, allo
     position_pnl = 0
     records = {}
     for i, row in trades.iterrows():
-        option = options[row['name']]
+
+        option = items[row['name']]
         bors = 'buy' if row['amount_trade'] > 0 else 'sell'
-        cash_flow, bargained_price = make_order(option, abs(row['amount_trade']), side=bors)
+        cash_flow, bargained_price = make_order(item=option, amount=abs(row['amount_trade']), fraction=fraction, side=bors)
         position_pnl += cash_flow
         records[row['name']] = Record(option, row['amount_target'], bargained_price, 'buy' if row['amount_target'] > 0 else 'sell')
         trading_logger.num_trades += 1
+
 
     new_position = current_position
     new_position.current_time = current_time

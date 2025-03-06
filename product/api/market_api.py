@@ -128,7 +128,17 @@ def make_order(instrument_name, side, order_type , contracts: int, ac, price: fl
             # 'post_only': True,
             'label': 'hedging'
         }
-    response, error = _deribit_http_request(func_name='make_order', method='POST', url_path=url, http_json={'method': 'private/buy','params':params}, ac=ac, proxy=proxy)
+    response, error = _deribit_http_request(func_name='make_order', method='POST', url_path=url, http_json={'method': url,'params':params}, ac=ac, proxy=proxy)
+    return response, error
+
+
+
+def cancel_all_by_instrument(instrument_name, ac, proxy:str=None):
+    url = f'/private/cancel_all_by_instrument'
+    params = {
+        'instrument_name': instrument_name,
+    }
+    response, error = _deribit_http_request(func_name='cancel_all_by_instrument', method='POST', url_path=url, http_json={'method': url,'params':params}, ac=ac, proxy=proxy)
     return response, error
 
 

@@ -15,7 +15,7 @@ from loguru import logger
 from zmq.devices import Proxy
 
 from product.account import Account
-from product.api.market_api import get_ticker_price, make_order
+from product.api.market_api import get_ticker_price, make_order, cancel_all_by_instrument
 from product.utils import MessageSender
 
 PROXY ='http://127.0.0.1:10809'
@@ -36,7 +36,7 @@ class Hedger:
         self.message_sender = message_sender
     def __repr__(self):
         return f"""{'-' * 32}
-#   Hedger 配置信息如下：
+#   🚩Hedger 配置信息如下：
 #   账户数量：{len(self.accounts)}
 #   账户信息：{[account.name for account in self.accounts]}
 #   目标合约：{self.target}
@@ -47,15 +47,16 @@ class Hedger:
         account.update_position()
         threshold1 = threshold1*account.equity
         threshold2 = threshold2*account.equity
-        msg = f'now account {account.name}: \nhedge_threshold1 is {threshold1:.2f}\nhedge_threshold2 {threshold2:.2f}'
+        msg = f'✅now account<{account.name}>: {account.__repr__()}\nhedge_threshold1: {threshold1:.2f} usd\nhedge_threshold2: {threshold2:.2f} usd'
         logger.info(msg)
         self.message_sender.send(msg)
         if self.hedge_fun == 'default':
             target_price = get_ticker_price(self.target)
             cash_delta = account.pos_delta * target_price
+
             # now_options_cash_delta = self.account.option_delta * target_price
             if abs(cash_delta) >= threshold1:  # 当delta达到设定的阈值时，返回true
-                msg = f'current delta is {cash_delta:.2f} out of {threshold1:.2f}\nstart hedging~'
+                msg = f'🐸current delta is {cash_delta:.2f} usd out of {threshold1:.2f}\n🐸Let me start hedging for you~'
                 logger.info(msg)
                 self.message_sender.send(msg)
                 # exit()
@@ -67,6 +68,7 @@ class Hedger:
                 # logger.info(msg)
                 # self.message_sender.send(msg)
                 # exit()
+                cancel_all_by_instrument(instrument_name=self.target, ac=account, proxy=account.proxy)
                 response, error = make_order(instrument_name=self.target, side=side, order_type='limit',
                            price=apply_precision(target_price, min_qty[self.target]),
                            contracts=int(abs(adjust_amount) * target_price // 10), ac=account, proxy=account.proxy)
@@ -78,16 +80,29 @@ class Hedger:
                 # logger.info(f'current_position.records: {self.account.current_position.records}')
                 # logger.info(f'current_swap_record: {self.account.current_position.records[self.target]}')
                 # logger.info(f'current_capital: {self.account.current_position.current_capital}')
+            else:
+                msg = f"🔵current delta is {cash_delta:.2f} usd\ndon't need hedging~"
+                logger.info(msg)
+                self.message_sender.send(msg)
             account.update_position()
             # self.trading_logger.trade_positions.append(get_position(self.account.current_position))
+
     def hedge_accounts(self, threshold1, threshold2):
-        for account in self.accounts:
-            self.hedge(account, threshold1, threshold2)
+        try:
+            for account in self.accounts:
+                self.hedge(account, threshold1, threshold2)
+            msg = f"🍀finish this turn.\n🍀Good luck to you.\n💰💰💰💰💰💰💰💰💰💰"
+            logger.info(msg)
+            self.message_sender.send(msg)
+        except Exception as e:
+            logger.error(f'hedge error: {e}')
+            self.message_sender.send(f'hedge error: {e}')
 
     def run(self, **kwargs):
         scheduler = Scheduler()
         # scheduler.add_job(self.hedge_accounts, 'cron', second=0, kwargs=kwargs)
-        scheduler.add_job(self.hedge_accounts, 'cron', minute=0, kwargs=kwargs)
+        if self.hedge_interval[-1] == 'h':
+            scheduler.add_job(self.hedge_accounts, 'cron', minute=5, hour='*/{}'.format(self.hedge_interval[:-1]), kwargs=kwargs)
         scheduler.start()
         while True:
             time.sleep(1)
@@ -135,5 +150,5 @@ if __name__ == '__main__':
                     hedge_fun = 'default',target='BTC-PERPETUAL',
                     message_sender=message_sender)
     message_sender.send(hedger.__repr__())
-    # hedger.hedge(0.5,0.25)
-    hedger.run(threshold1=0.5, threshold2 = 0.25)
+    hedger.hedge(tt_db_04,0.5,0.25)
+    # hedger.run(threshold1=0.5, threshold2 = 0.25)
