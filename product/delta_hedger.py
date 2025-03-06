@@ -30,12 +30,19 @@ def apply_precision(price, min_tick):
 class Hedger:
     def __init__(self, accounts: [Account], hedge_fun, target, message_sender: MessageSender, hedge_interval='1h'):
         self.accounts = accounts
-
         self.hedge_fun = hedge_fun
         self.hedge_interval = hedge_interval
         self.target = target
         self.message_sender = message_sender
-
+    def __repr__(self):
+        return f"""{'-' * 32}
+#   Hedger 配置信息如下：
+#   账户数量：{len(self.accounts)}
+#   账户信息：{[account.name for account in self.accounts]}
+#   目标合约：{self.target}
+#   对冲函数：{self.hedge_fun}
+#   对冲间隔：{self.hedge_interval}
+{'-' * 32}"""
     def hedge(self, account: Account, threshold1, threshold2):
         account.update_position()
         threshold1 = threshold1*account.equity
@@ -123,8 +130,10 @@ if __name__ == '__main__':
                       name='tt_db_05',
                       target='BTC'
                       )
+
     hedger = Hedger(accounts=[tt_db_04, tt_db_05],
                     hedge_fun = 'default',target='BTC-PERPETUAL',
                     message_sender=message_sender)
+    message_sender.send(hedger.__repr__())
     # hedger.hedge(0.5,0.25)
     hedger.run(threshold1=0.5, threshold2 = 0.25)
